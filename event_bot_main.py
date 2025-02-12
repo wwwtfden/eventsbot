@@ -191,7 +191,7 @@ class Database:
     def get_event_by_id(self, event_id):
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT
+            SELECT 
                 e.id,
                 e.name,
                 e.max_participants,
@@ -210,7 +210,7 @@ class Database:
                 'name': result[1],
                 'max_participants': result[2],
                 'end_date': result[3],  # сохраняем как строку
-                'event_time': result[4],
+                'event_time': result[4],  # добавляем время
                 'current_participants': result[5]
             }
         return None
@@ -555,120 +555,130 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         event_id = int(query.data.split("_")[1])
-        # Проверка существования мероприятия
-        if not any(e[0] == event_id for e in db.get_all_events()):
-            await query.edit_message_text("❌ Мероприятие не найдено!")
-            return ConversationHandler.END
-
         context.user_data['edit_event_id'] = event_id
-        # Показываем меню редактирования
+
+        # Исправленные callback_data для кнопок
         keyboard = [
             [InlineKeyboardButton("Название", callback_data="field_name")],
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
-            [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")]
+            [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")],
+            [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")]
         ]
+
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("Выберите поле для редактирования:", reply_markup=reply_markup)
         return EDIT_CHOICE
 
-    except (IndexError, ValueError):
-        await query.edit_message_text("❌ Ошибка в обработке команды")
+    except Exception as e:
+        logger.error(f"Error in edit_event_start: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Произошла ошибка")
         return ConversationHandler.END
-
 
 async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    # Получаем данные о мероприятии
-    event_id = context.user_data.get('edit_event_id')
-    event = db.get_event_by_id(event_id)
+    try:
+        # Исправляем разбор callback_data
+        _, field = query.data.split('_', 1)  # Разделяем только на 2 части
 
-    field = query.data.split("field_")[1]
-    context.user_data['edit_field'] = field
+        event_id = context.user_data['edit_event_id']
+        event = db.get_event_by_id(event_id)
 
-    # Получаем текущее значение
-    current_value = {
-        'name': event['name'],
-        'max_participants': event['max_participants'],
-        'end_date': event['end_date'].strftime("%Y-%m-%d"),
-        'event_time': event['event_time']
-    }[field]
+        if not event:
+            await query.edit_message_text("❌ Мероприятие не найдено!")
+            return ConversationHandler.END
 
-    field_name = {
-        'name': 'название',
-        'max_participants': 'максимальное количество участников',
-        'end_date': 'дату окончания',
-        'event_time': 'время мероприятия'
-    }[field]
+        context.user_data['edit_field'] = field
 
-    await query.edit_message_text(
-        f"Текущее {field_name}: {current_value}\n"
-        f"Введите новое значение:"
-    )
-    return EDIT_VALUE
+        # Обновляем данные поля
+        field_data = {
+            'name': ('название', event['name']),
+            'max_participants': ('максимальное количество участников', event['max_participants']),
+            'end_date': ('дату окончания', event['end_date']),
+            'event_time': ('время мероприятия', event['event_time'])
+        }
 
+        field_name, current_value = field_data[field]
+        await query.edit_message_text(
+            f"Текущее {field_name}: {current_value}\nВведите новое значение:"
+        )
+        return EDIT_VALUE
+
+    except ValueError as e:
+        logger.error(f"Error splitting callback_data: {str(e)}")
+        await query.edit_message_text("❌ Ошибка в обработке запроса")
+        return ConversationHandler.END
+    except KeyError as e:
+        logger.error(f"Invalid field: {str(e)}")
+        await query.edit_message_text("❌ Некорректное поле для редактирования")
+        return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error in edit_choice: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Произошла внутренняя ошибка")
+        return ConversationHandler.END
 
 async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data = context.user_data
-    field = user_data.get('edit_field')
-    event_id = user_data.get('edit_event_id')
-    value = update.message.text
-    event = db.get_event_by_id(event_id)
-
     try:
-        if field == 'max_participants':
-            new_max = int(value)
-            current = event['current_participants']
+        user_data = context.user_data
+        field = user_data['edit_field']
+        value = update.message.text
+        event_id = user_data['edit_event_id']
+        event = db.get_event_by_id(event_id)
 
-            if new_max < current:
-                await update.message.reply_text(
-                    f"❌ Ошибка: {current} участников уже записано!\n"
-                    f"Минимальное значение: {current}\n"
-                    f"Попробуйте снова:"
-                )
+        # Обработка времени
+        if field == 'event_time':
+            try:
+                # Проверяем формат времени
+                datetime.strptime(value, "%H:%M")
+                db.update_event_field(event_id, 'event_time', value)
+                await update.message.reply_text("✅ Время мероприятия обновлено!")
+                return ConversationHandler.END
+            except ValueError:
+                await update.message.reply_text("❌ Неверный формат времени! Используйте ЧЧ:ММ")
                 return EDIT_VALUE
 
-            if new_max <= 0:
-                await update.message.reply_text("❌ Число должно быть больше 0!")
-                return EDIT_VALUE
-
-            db.update_event_field(event_id, field, new_max)
-            await update.message.reply_text("✅ Максимальное количество участников обновлено!")
-
+        # Обработка даты
         elif field == 'end_date':
-            new_date = datetime.strptime(value, "%Y-%m-%d").date()
-            if new_date < datetime.now().date():
-                await update.message.reply_text("❌ Дата не может быть в прошлом!")
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+                if datetime.strptime(value, "%Y-%m-%d").date() < datetime.now().date():
+                    await update.message.reply_text("❌ Дата не может быть в прошлом!")
+                    return EDIT_VALUE
+                db.update_event_field(event_id, field, value)
+                await update.message.reply_text("✅ Дата обновлена!")
+                return ConversationHandler.END
+            except ValueError:
+                await update.message.reply_text("❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД")
                 return EDIT_VALUE
 
-            db.update_event_field(event_id, field, new_date)
-            await update.message.reply_text("✅ Дата окончания обновлена!")
+        # Обработка максимального количества участников
+        elif field == 'max_participants':
+            try:
+                new_max = int(value)
+                if new_max < event['current_participants']:
+                    await update.message.reply_text(f"❌ Нельзя установить меньше {event['current_participants']}!")
+                    return EDIT_VALUE
+                db.update_event_field(event_id, field, new_max)
+                await update.message.reply_text("✅ Максимальное количество участников обновлено!")
+                return ConversationHandler.END
+            except ValueError:
+                await update.message.reply_text("❌ Введите целое число!")
+                return EDIT_VALUE
 
+        # Обработка названия
         elif field == 'name':
             if len(value) < 3:
                 await update.message.reply_text("❌ Название слишком короткое (мин. 3 символа)!")
                 return EDIT_VALUE
-
             db.update_event_field(event_id, field, value)
             await update.message.reply_text("✅ Название обновлено!")
+            return ConversationHandler.END
 
-        elif field == 'event_time':
-            datetime.strptime(value, "%H:%M")
-            db.update_event_field(user_data['edit_event_id'], 'event_time', value)
-            await update.message.reply_text("Время мероприятия обновлено!")
-
-    except ValueError as e:
-        error_msg = {
-            'max_participants': "❌ Введите целое положительное число!",
-            'end_date': "❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД",
-            'event_time': "❌ Неверный формат времени! Используйте ЧЧ:ММ"
-        }.get(field, "❌ Ошибка ввода")
-
-        await update.message.reply_text(f"{error_msg}\nПопробуйте снова:")
-        return EDIT_VALUE
-
-    return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Error in edit_value: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Произошла внутренняя ошибка")
+        return ConversationHandler.END
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
