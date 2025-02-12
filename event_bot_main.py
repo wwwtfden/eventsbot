@@ -43,9 +43,9 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 
 # Состояния для ConversationHandler
 (
-    CREATE_NAME, CREATE_MAX, CREATE_END, CREATE_TIME,
+    CREATE_MAX, CREATE_END, CREATE_TIME,
     EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM
-) = range(7)
+) = range(6)
 
 
 def is_admin(user_id: int) -> bool:
@@ -62,7 +62,6 @@ class Database:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
                 max_participants INTEGER NOT NULL,
                 end_date DATE NOT NULL,
                 event_time TIME NOT NULL,
@@ -72,7 +71,7 @@ class Database:
         # Проверка существования столбцов
         cursor.execute("PRAGMA table_info(events)")
         columns = [column[1] for column in cursor.fetchall()]
-        required_columns = {'name', 'max_participants', 'end_date', 'event_time'}
+        required_columns = {'max_participants', 'end_date', 'event_time'}
 
         if not required_columns.issubset(columns):
             cursor.execute('DROP TABLE IF EXISTS events')
@@ -90,12 +89,12 @@ class Database:
         ''')
         self.conn.commit()
 
-    def add_event(self, name, max_participants, end_date, event_time):
+    def add_event(self, max_participants, end_date, event_time):
         cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO events (name, max_participants, end_date, event_time)
-            VALUES (?, ?, ?, ?)
-        ''', (name, max_participants, end_date, event_time))
+            INSERT INTO events (max_participants, end_date, event_time)
+            VALUES (?, ?, ?)
+        ''', (max_participants, end_date, event_time))
         self.conn.commit()
         return cursor.lastrowid
 
@@ -110,7 +109,6 @@ class Database:
         cursor.execute('''
             SELECT 
                 e.id,
-                e.name,
                 e.max_participants,
                 e.end_date,
                 e.event_time,
@@ -155,7 +153,7 @@ class Database:
     def get_user_events(self, user_id):
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT e.id, e.name, e.end_date
+            SELECT e.id, e.end_date, e.event_time
             FROM events e
             JOIN registrations r ON e.id = r.event_id
             WHERE r.user_id = ?
@@ -178,22 +176,21 @@ class Database:
         ''', (value, event_id))
         self.conn.commit()
 
-    def delete_old_events(self):
-        cursor = self.conn.cursor()
-        week_ago = datetime.now() - timedelta(days=7)
-        cursor.execute('''
-            DELETE FROM events WHERE end_date < ?
-        ''', (week_ago,))
-        deleted = cursor.rowcount
-        self.conn.commit()
-        return deleted
+    # def delete_old_events(self):
+    #     cursor = self.conn.cursor()
+    #     week_ago = datetime.now() - timedelta(days=7)
+    #     cursor.execute('''
+    #         DELETE FROM events WHERE end_date < ?
+    #     ''', (week_ago,))
+    #     deleted = cursor.rowcount
+    #     self.conn.commit()
+    #     return deleted
 
     def get_event_by_id(self, event_id):
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT 
                 e.id,
-                e.name,
                 e.max_participants,
                 e.end_date,
                 e.event_time,
@@ -207,11 +204,10 @@ class Database:
         if result:
             return {
                 'id': result[0],
-                'name': result[1],
-                'max_participants': result[2],
-                'end_date': result[3],  # сохраняем как строку
-                'event_time': result[4],  # добавляем время
-                'current_participants': result[5]
+                'max_participants': result[1],
+                'end_date': result[2],  # сохраняем как строку
+                'event_time': result[3],  # добавляем время
+                'current_participants': result[4]
             }
         return None
 
@@ -250,11 +246,11 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for event in events:
-            event_id, name, max_p, end_date, event_time, current = event
+            event_id, max_p, end_date, event_time, current = event
             available = max_p - current
             # Форматируем дату и время
             formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-            event_text = f"{name}\n {formatted_date} {event_time}\n {available} своб." #🎫 Свободно: {available}/{max_p}
+            event_text = f"{formatted_date} {event_time}\n , мест: {available}/{max_p}" #🎫 Свободно: {available}/{max_p}
             keyboard.append([InlineKeyboardButton(event_text, callback_data=f"event_{event_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -296,7 +292,6 @@ def get_event_by_id(self, event_id):
     cursor.execute('''
         SELECT
             e.id,
-            e.name,
             e.max_participants,
             e.end_date,
             e.event_time,
@@ -310,11 +305,10 @@ def get_event_by_id(self, event_id):
     if result:
         return {
             'id': result[0],
-            'name': result[1],
-            'max_participants': result[2],
-            'end_date': result[3],  # сохраняем как строку
-            'event_time': result[4],
-            'current_participants': result[5]
+            'max_participants': result[1],
+            'end_date': result[2],  # сохраняем как строку
+            'event_time': result[3],
+            'current_participants': result[4]
         }
     return None
 
@@ -410,20 +404,20 @@ async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message = update.message
 
-    await message.reply_text("Введите название мероприятия:")
-    return CREATE_NAME  # Явное возвращение первого состояния
+    await message.reply_text("Введите количество участников:")
+    return CREATE_MAX # Явное возвращение первого состояния
 
 
-async def create_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        context.user_data['event_name'] = update.message.text
-        logger.info(f"Received event name: {context.user_data['event_name']}")
-
-        await update.message.reply_text("Введите максимальное количество участников:")
-        return CREATE_MAX
-    except Exception as e:
-        logger.error(f"Error in create_name: {str(e)}")
-        return ConversationHandler.END
+# async def create_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     try:
+#         context.user_data['event_name'] = update.message.text
+#         logger.info(f"Received event name: {context.user_data['event_name']}")
+#
+#         await update.message.reply_text("Введите максимальное количество участников:")
+#         return CREATE_MAX
+#     except Exception as e:
+#         logger.error(f"Error in create_name: {str(e)}")
+#         return ConversationHandler.END
 
 
 async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -468,18 +462,17 @@ async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         time_formatted = event_time.strftime("%H:%M")
 
         # Проверяем наличие всех необходимых данных
-        if not all(key in context.user_data for key in ['event_name', 'event_max', 'end_date']):
+        if not all(key in context.user_data for key in ['event_max', 'end_date']):
             logger.error("Missing required data in context")
             await update.message.reply_text("❌ Ошибка: потеряны данные мероприятия. Начните заново.")
             return ConversationHandler.END
 
         # Получаем данные из контекста
-        name = context.user_data['event_name']
         max_p = context.user_data['event_max']
         end_date = context.user_data['end_date'].strftime("%Y-%m-%d")  # Конвертируем дату в строку
 
         # Добавляем мероприятие в БД
-        db.add_event(name, max_p, end_date, time_formatted)
+        db.add_event(max_p, end_date, time_formatted)
         await update.message.reply_text("✅ Мероприятие успешно создано!")
         return ConversationHandler.END
 
@@ -504,8 +497,8 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for event in events:
-            event_id, name, max_p, end_date, event_time, current = event
-            text = f"{name} ({current}/{max_p})"
+            event_id, max_p, end_date, event_time, current = event
+            text = f"{end_date} {event_time}({current}/{max_p})"
             keyboard.append([
                 InlineKeyboardButton(text, callback_data=f"view_{event_id}"),
                 InlineKeyboardButton("✏️", callback_data=f"edit_{event_id}"),
@@ -531,8 +524,8 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = []
     for event in events:
-        event_id, name, end_date = event
-        text = f"{name} ( {end_date.split()[0]})"
+        event_id, end_date, event_time = event
+        text = f"( {end_date.split()[0]}) {event_time}"
         keyboard.append([InlineKeyboardButton(text, callback_data=f"unreg_{event_id}")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -559,7 +552,6 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Исправленные callback_data для кнопок
         keyboard = [
-            [InlineKeyboardButton("Название", callback_data="field_name")],
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
             [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")],
             [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")]
@@ -593,7 +585,6 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Обновляем данные поля
         field_data = {
-            'name': ('название', event['name']),
             'max_participants': ('максимальное количество участников', event['max_participants']),
             'end_date': ('дату окончания', event['end_date']),
             'event_time': ('время мероприятия', event['event_time'])
@@ -665,15 +656,6 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError:
                 await update.message.reply_text("❌ Введите целое число!")
                 return EDIT_VALUE
-
-        # Обработка названия
-        elif field == 'name':
-            if len(value) < 3:
-                await update.message.reply_text("❌ Название слишком короткое (мин. 3 символа)!")
-                return EDIT_VALUE
-            db.update_event_field(event_id, field, value)
-            await update.message.reply_text("✅ Название обновлено!")
-            return ConversationHandler.END
 
     except Exception as e:
         logger.error(f"Error in edit_value: {str(e)}", exc_info=True)
@@ -812,12 +794,12 @@ def main():
             CallbackQueryHandler(create_event, pattern="^createevent$")
         ],
         states={
-            CREATE_NAME: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    create_name
-                )
-            ],
+            # CREATE_NAME: [
+            #     MessageHandler(
+            #         filters.TEXT & ~filters.COMMAND,
+            #         create_name
+            #     )
+            # ],
             CREATE_MAX: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
