@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, time
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG  # Измените на DEBUG для детальной информации
+    level=logging.DEBUG # .INFO после исправления багов
 )
 
 logger = logging.getLogger(__name__)
@@ -25,12 +25,11 @@ logger = logging.getLogger(__name__)
 config = configparser.ConfigParser()
 config.read('bot_config.ini', encoding='utf-8')
 TOKEN = config['Main']['TOKEN']
-ADMIN_ID = config.getint('Main', 'ADMIN_ID')  # Преобразование в int
+ADMIN_ID = config.getint('Main', 'ADMIN_ID')  # Преобразование ADMIN_ID в int
 DATABASE_NAME = config['Main']['DATABASE_NAME']
 
 persistence = PicklePersistence(filepath="conversationbot")
 
-# Добавляем новые константы для меню
 USER_COMMANDS = [
     ("📅 Список мероприятий", "events"),
     ("📌 Мои записи", "myevents"),
@@ -364,7 +363,7 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Вы уверены, что хотите удалить это мероприятие?",
             reply_markup=reply_markup
         )
-        return DELETE_CONFIRM  # Возвращаем состояние подтверждения
+        return DELETE_CONFIRM
 
 
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -453,11 +452,9 @@ async def create_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return CREATE_END
 
         context.user_data['end_date'] = end_date
-        # message = update.message or update.callback_query.message
         await update.message.reply_text("Введите время мероприятия в формате ЧЧ:ММ:")
         return CREATE_TIME
     except ValueError:
-        # message = update.message or update.callback_query.message
         await update.message.reply_text("Некорректный формат даты! Используйте ГГГГ-ММ-ДД:")
         return CREATE_END
 
@@ -468,7 +465,7 @@ async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Парсим время и преобразуем в строку
         event_time = datetime.strptime(time_str, "%H:%M").time()
-        time_formatted = event_time.strftime("%H:%M")  # Конвертируем в строку
+        time_formatted = event_time.strftime("%H:%M")
 
         # Проверяем наличие всех необходимых данных
         if not all(key in context.user_data for key in ['event_name', 'event_max', 'end_date']):
@@ -585,7 +582,7 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Получаем данные о мероприятии
     event_id = context.user_data.get('edit_event_id')
-    event = db.get_event_by_id(event_id)  # Нужно реализовать этот метод
+    event = db.get_event_by_id(event_id)
 
     field = query.data.split("field_")[1]
     context.user_data['edit_field'] = field
@@ -673,15 +670,6 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-#
-# async def auto_cleanup(context: ContextTypes.DEFAULT_TYPE):
-#     deleted = db.delete_old_events()
-#     if deleted > 0:
-#         await context.bot.send_message(
-#             ADMIN_ID,
-#             f"Автоматически удалено {deleted} старых мероприятий"
-#         )
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -751,7 +739,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     try:
-        # Добавляем логирование
         logging.info(f"User {query.from_user.id} pressed button: {query.data}")
 
         command = query.data
