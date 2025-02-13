@@ -93,7 +93,7 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             available = max_p - current
             # Форматируем дату и время
             formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-            event_text = f"{formatted_date} {event_time}\n , мест: {available}/{max_p}" #🎫 Свободно: {available}/{max_p}
+            event_text = f"{formatted_date} {event_time}\n , мест: {available}/{max_p}"
             keyboard.append([InlineKeyboardButton(event_text, callback_data=f"event_{event_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -149,7 +149,7 @@ def get_event_by_id(self, event_id):
         return {
             'id': result[0],
             'max_participants': result[1],
-            'end_date': result[2],  # сохраняем как строку
+            'end_date': result[2],
             'event_time': result[3],
             'current_participants': result[4]
         }
@@ -176,7 +176,7 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [f"{i + 1}. @{username}" for i, username in enumerate(participants)]
         ) if participants else "Нет участников"
 
-        # Добавлена кнопка отправки сообщения
+        # Клавиатура для пункта  просмотра участников
         keyboard = [
             [InlineKeyboardButton("📨 Отправить сообщение", callback_data=f"sendmsg_{event_id}")],
             [InlineKeyboardButton("↩️ Назад", callback_data="adminevents")]
@@ -279,7 +279,7 @@ async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin_access(update):
         return ConversationHandler.END
 
-    # Очищаем предыдущие данные
+    # Очищаем предыдущие данные (контекст)
     context.user_data.clear()
 
     # Получаем сообщение из callback_query или message
@@ -291,7 +291,7 @@ async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message
 
     await message.reply_text("Введите количество участников:")
-    return CREATE_MAX # Явное возвращение первого состояния
+    return CREATE_MAX
 
 
 async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -424,7 +424,7 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         event_id = int(query.data.split("_")[1])
         context.user_data['edit_event_id'] = event_id
 
-        # Исправленные callback_data для кнопок
+        # клавиатура берется отсюда
         keyboard = [
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
             [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")],
@@ -445,8 +445,7 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     try:
-        # Исправляем разбор callback_data
-        _, field = query.data.split('_', 1)  # Разделяем только на 2 части
+        _, field = query.data.split('_', 1) # Разделение на две части
 
         event_id = context.user_data['edit_event_id']
         event = db.get_event_by_id(event_id)
