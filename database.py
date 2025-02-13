@@ -87,6 +87,14 @@ class Database:
         ''', (event_id,))
         return [row[0] for row in cursor.fetchall()]
 
+    def get_event_participant_ids(self, event_id):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT user_id FROM registrations
+            WHERE event_id = ?
+        ''', (event_id,))
+        return [row[0] for row in cursor.fetchall()]
+
     def check_available_slots(self, event_id):
         cursor = self.conn.cursor()
         cursor.execute('''

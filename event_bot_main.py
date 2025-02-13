@@ -46,8 +46,9 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 # Состояния для ConversationHandler
 (
     CREATE_MAX, CREATE_END, CREATE_TIME,
-    EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM
-) = range(6)
+    EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM,
+    WAITING_FOR_MESSAGE
+) = range(7)
 
 
 def is_admin(user_id: int) -> bool:
@@ -165,7 +166,6 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data.startswith("view_"):
-        # Проверка прав администратора
         if not await check_admin_access(update):
             return
 
@@ -176,11 +176,16 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [f"{i + 1}. @{username}" for i, username in enumerate(participants)]
         ) if participants else "Нет участников"
 
+        # Добавлена кнопка отправки сообщения
+        keyboard = [
+            [InlineKeyboardButton("📨 Отправить сообщение", callback_data=f"sendmsg_{event_id}")],
+            [InlineKeyboardButton("↩️ Назад", callback_data="adminevents")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         await query.edit_message_text(
             text=f"📋 Список участников мероприятия:\n\n{participants_text}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("↩️ Назад", callback_data="adminevents")]
-            ])
+            reply_markup=reply_markup
         )
         return
 
@@ -201,6 +206,45 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return DELETE_CONFIRM
 
+
+async def send_message_to_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not await check_admin_access(update):
+        return ConversationHandler.END
+
+    event_id = int(query.data.split('_')[1])
+    context.user_data['sendmsg_event_id'] = event_id
+
+    await query.edit_message_text("✍️ Введите сообщение для участников:")
+    return WAITING_FOR_MESSAGE
+
+
+async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message_text = update.message.text
+    event_id = context.user_data.get('sendmsg_event_id')
+    participant_ids = db.get_event_participant_ids(event_id)
+
+    # Исключаем администратора
+    participant_ids = [uid for uid in participant_ids if uid != ADMIN_ID]
+
+    # Отправка сообщений
+    success, failed = 0, 0
+    for user_id in participant_ids:
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message_text)
+            success += 1
+        except Exception as e:
+            logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
+            failed += 1
+
+    await update.message.reply_text(
+        f"✅ Сообщение отправлено {success} участникам.\n"
+        f"❌ Не удалось отправить: {failed}"
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -594,6 +638,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await create_event(update, context)
             else:
                 await query.edit_message_text("⛔ Доступ запрещен!")
+        elif command.startswith("sendmsg_"):
+            await send_message_to_participants(update, context)
+            return
         else:
             await query.edit_message_text("⚠️ Команда не распознана")
 
@@ -636,12 +683,6 @@ def main():
             CallbackQueryHandler(create_event, pattern="^createevent$")
         ],
         states={
-            # CREATE_NAME: [
-            #     MessageHandler(
-            #         filters.TEXT & ~filters.COMMAND,
-            #         create_name
-            #     )
-            # ],
             CREATE_MAX: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
@@ -704,11 +745,30 @@ def main():
     )
     application.add_handler(delete_event_conv)
 
+    send_message_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                send_message_to_participants,
+                pattern=r"^sendmsg_\d+$"  # Регулярное выражение для sendmsg_ + цифры
+            )
+        ],
+        states={
+            WAITING_FOR_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, send_message_handler)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        persistent=True,
+        name="send_message_conv"
+    )
+    application.add_handler(send_message_conv)
+
     # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
     application.add_handler(CallbackQueryHandler(edit_event_start, pattern="^edit_"))
     application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^unreg_"))
     application.add_handler(CallbackQueryHandler(admin_actions, pattern="^(view|delete)_"))
+    application.add_handler(CallbackQueryHandler(send_message_to_participants, pattern=r"^sendmsg_\d+$"))
     application.add_handler(CallbackQueryHandler(menu_handler))
     application.add_handler(CallbackQueryHandler(handle_back_button, pattern="^adminevents$"))
 
