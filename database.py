@@ -132,16 +132,6 @@ class Database:
         ''', (value, event_id))
         self.conn.commit()
 
-    # def delete_old_events(self):
-    #     cursor = self.conn.cursor()
-    #     week_ago = datetime.now() - timedelta(days=7)
-    #     cursor.execute('''
-    #         DELETE FROM events WHERE end_date < ?
-    #     ''', (week_ago,))
-    #     deleted = cursor.rowcount
-    #     self.conn.commit()
-    #     return deleted
-
     def get_event_by_id(self, event_id):
         cursor = self.conn.cursor()
         cursor.execute('''
@@ -161,8 +151,8 @@ class Database:
             return {
                 'id': result[0],
                 'max_participants': result[1],
-                'end_date': result[2],  # сохраняем как строку
-                'event_time': result[3],  # добавляем время
+                'end_date': result[2],
+                'event_time': result[3],
                 'current_participants': result[4]
             }
         return None

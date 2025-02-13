@@ -294,18 +294,6 @@ async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CREATE_MAX # Явное возвращение первого состояния
 
 
-# async def create_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#     try:
-#         context.user_data['event_name'] = update.message.text
-#         logger.info(f"Received event name: {context.user_data['event_name']}")
-#
-#         await update.message.reply_text("Введите максимальное количество участников:")
-#         return CREATE_MAX
-#     except Exception as e:
-#         logger.error(f"Error in create_name: {str(e)}")
-#         return ConversationHandler.END
-
-
 async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         max_p = int(update.message.text)
