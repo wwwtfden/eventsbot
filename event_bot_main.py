@@ -27,7 +27,16 @@ config = configparser.ConfigParser()
 config.read('bot_config.ini', encoding='utf-8')
 
 TOKEN = config['Main']['TOKEN']
-ADMIN_ID = config.getint('Main', 'ADMIN_ID')  # Преобразование ADMIN_ID в int
+
+try:
+    ADMIN_IDS = [
+        int(admin_id.strip())
+        for admin_id in config.get('Main', 'ADMIN_ID').split(',')
+        if admin_id.strip().isdigit()
+    ]
+except (configparser.NoOptionError, configparser.NoSectionError):
+    ADMIN_IDS = []
+
 DATABASE_NAME = config['Main']['DATABASE_NAME']
 
 persistence = PicklePersistence(filepath="conversationbot")
@@ -52,7 +61,8 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    return user_id in ADMIN_IDS
+    #return user_id == ADMIN_ID
 
 global db
 db = None
@@ -75,14 +85,17 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
             return
 
         participants = db.get_event_participant_ids(event_id)
-        participants = [uid for uid in participants if uid != ADMIN_ID]
+        participants = [uid for uid in participants if uid not in ADMIN_IDS]
 
         event_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
         event_time = datetime.strptime(event['event_time'], "%H:%M").strftime("%H:%M")
         message_text = (
-            f"🔔 Напоминание: мероприятие начнется через 3 часа!\n"
-            f"📅 Дата: {event_date}\n"
-            f"⏰ Время: {event_time}"
+            f"Привет! 🐴\n"
+            f"Напоминаю, что рабочая сессия начнется в {event_time}\n"
+            f"Ссылку на связь пришлю тебе за 5-10 минут до созвона, не пропусти 🤎"
+            f"Оля #КоньНеВалялся"
+            f"* время по мск"
+            f"* можно прийти позже/уйти раньше, но желательно об этом написать"
         )
 
         success, failed = 0, 0
@@ -271,7 +284,7 @@ async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     participant_ids = db.get_event_participant_ids(event_id)
 
     # Исключаем администратора
-    participant_ids = [uid for uid in participant_ids if uid != ADMIN_ID]
+    participant_ids = [uid for uid in participant_ids if uid not in ADMIN_IDS]
 
     # Отправка сообщений
     success, failed = 0, 0
@@ -619,7 +632,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     keyboard = []
 
-    if user.id == ADMIN_ID:
+    if user.id in ADMIN_IDS:
         buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in ADMIN_COMMANDS]
     else:
         buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in USER_COMMANDS]
@@ -695,12 +708,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif command == "myevents":
             await my_events(update, context)
         elif command == "adminevents":
-            if user_id == ADMIN_ID:
+            if user_id in ADMIN_IDS:
                 await admin_events(update, context)
             else:
                 await query.edit_message_text("⛔ Доступ запрещен!")
         elif command == "createevent":
-            if user_id == ADMIN_ID:
+            if user_id in ADMIN_IDS:
                 await create_event(update, context)
             else:
                 await query.edit_message_text("⛔ Доступ запрещен!")
