@@ -303,32 +303,25 @@ async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data.clear()
     return ConversationHandler.END
 
+
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
-        await query.answer()
+        event_id = context.user_data.get('delete_event_id')
 
-        if query.data == "confirm_delete":
-            event_id = context.user_data.get('delete_event_id')
-            if event_id:
-                # Отмена задачи напоминания
-                if 'reminder_jobs' in context.bot_data and event_id in context.bot_data['reminder_jobs']:
-                    job = context.bot_data['reminder_jobs'].pop(event_id)
-                    job.schedule_removal()
-                    logger.info(f"Задача напоминания для мероприятия {event_id} отменена")
+        # Удаляем все задачи мероприятия
+        job_name = f"reminder_{event_id}"
+        for job in context.job_queue.jobs():
+            if job.name == job_name:
+                job.schedule_removal()
 
-                db.delete_event(event_id)
-                await query.edit_message_text("✅ Мероприятие успешно удалено!")
-            else:
-                await query.edit_message_text("❌ Ошибка: мероприятие не найдено")
-        else:
-            await query.edit_message_text("❌ Удаление отменено")
+        # Удаляем из БД
+        db.delete_event(event_id)
+        await query.edit_message_text("✅ Мероприятие удалено!")
 
-        context.user_data.clear()
-        return ConversationHandler.END
     except Exception as e:
-            logger.error(f"Error deleting event: {str(e)}")
-            await query.edit_message_text("❌ Ошибка при удалении мероприятия")
+        logger.error(f"Ошибка: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка удаления")
 
 
 async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -371,28 +364,31 @@ async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         event_time = datetime.strptime(time_str, "%H:%M").time()
         time_formatted = event_time.strftime("%H:%M")
+
+        # Получаем данные из контекста
         max_p = context.user_data['event_max']
         end_date = context.user_data['end_date'].strftime("%Y-%m-%d")
+
+        # Добавляем мероприятие в БД
         event_id = db.add_event(max_p, end_date, time_formatted)
 
-        # Рассчет времени напоминания
-        event_date = context.user_data['end_date']
-        event_datetime = datetime.combine(event_date, event_time)
+        # Рассчитываем время напоминания
+        event_datetime = datetime.combine(
+            context.user_data['end_date'],
+            event_time
+        )
         reminder_time = event_datetime - timedelta(hours=3)
-        current_time = datetime.now()
 
-        if reminder_time > current_time:
-            delta = (reminder_time - current_time).total_seconds()
-            job = context.job_queue.run_once(
+        # Планируем задачу без сохранения в bot_data
+        if reminder_time > datetime.now():
+            delta = (reminder_time - datetime.now()).total_seconds()
+            context.job_queue.run_once(
                 send_reminder,
                 when=delta,
                 data=event_id,
-                name=f"reminder_{event_id}"
+                name=f"reminder_{event_id}"  # Уникальное имя задачи
             )
-            context.bot_data.setdefault('reminder_jobs', {})[event_id] = job
-            logger.info(f"⏰ Напоминание для {event_id} запланировано на {reminder_time}")
-        else:
-            logger.warning("⏳ Напоминание не создано (менее 3 часов до мероприятия)")
+            logger.info(f"⏰ Напоминание для мероприятия {event_id} запланировано")
 
         await update.message.reply_text("✅ Мероприятие успешно создано!")
         return ConversationHandler.END
@@ -401,8 +397,8 @@ async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Неверный формат времени! Используйте ЧЧ:ММ")
         return CREATE_TIME
     except Exception as e:
-        logger.error(f"🔥 Ошибка в create_time: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Произошла ошибка при создании мероприятия")
+        logger.error(f"Ошибка: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Внутренняя ошибка")
         return ConversationHandler.END
 
 async def create_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -594,16 +590,14 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Введите целое число!")
                 return EDIT_VALUE
 
-        # Обновление задачи напоминания при изменении даты/времени
+        job_name = f"reminder_{event_id}"
+        for job in context.job_queue.jobs():
+            if job.name == job_name:
+                job.schedule_removal()
+                logger.info(f"🗑️ Удалена задача {job_name}")
+
         if field in ['end_date', 'event_time']:
             event = db.get_event_by_id(event_id)
-
-            # Удаляем старую задачу
-            if 'reminder_jobs' in context.bot_data and event_id in context.bot_data['reminder_jobs']:
-                old_job = context.bot_data['reminder_jobs'].pop(event_id)
-                old_job.schedule_removal()
-
-            # Пересчитываем время напоминания
             end_date = datetime.strptime(event['end_date'], "%Y-%m-%d").date()
             event_time = datetime.strptime(event['event_time'], "%H:%M").time()
             event_datetime = datetime.combine(end_date, event_time)
@@ -611,20 +605,19 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if reminder_time > datetime.now():
                 delta = (reminder_time - datetime.now()).total_seconds()
-                job = context.job_queue.run_once(
+                context.job_queue.run_once(
                     send_reminder,
                     when=delta,
                     data=event_id,
-                    name=f"reminder_{event_id}"
+                    name=job_name
                 )
-                context.bot_data.setdefault('reminder_jobs', {})[event_id] = job
-                logger.info(f"🔄 Напоминание для мероприятия {event_id} обновлено")
+                logger.info(f"🔄 Задача {job_name} пересоздана")
 
         return ConversationHandler.END
 
     except Exception as e:
-        logger.error(f"🚨 Ошибка: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Ошибка при обновлении")
+        logger.error(f"Ошибка: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Ошибка обновления")
         return ConversationHandler.END
 
 
@@ -740,30 +733,34 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
     try:
-        db = context.job.data  # Получаем БД из параметра задачи
-        now = datetime.now()
+        # Создаем новый экземпляр БД
+        db = database.Database(DATABASE_NAME)
         events = db.get_all_events()
 
         for event in events:
             event_id = event[0]
-            end_date = datetime.strptime(event[2], "%Y-%m-%d").date()
-            event_time = datetime.strptime(event[3], "%H:%M").time()
+            end_date_str = event[2]
+            event_time_str = event[3]
+
+            # Парсим время
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            event_time = datetime.strptime(event_time_str, "%H:%M").time()
             event_datetime = datetime.combine(end_date, event_time)
             reminder_time = event_datetime - timedelta(hours=3)
 
+            # Создаем задачу если время актуально
             if reminder_time > datetime.now():
                 delta = (reminder_time - datetime.now()).total_seconds()
-                job = context.job_queue.run_once(
+                context.job_queue.run_once(
                     send_reminder,
                     when=delta,
                     data=event_id,
                     name=f"reminder_{event_id}"
                 )
-                context.bot_data.setdefault('reminder_jobs', {})[event_id] = job
-                logger.info(f"♻️ Восстановлено напоминание для мероприятия {event_id}")
+                logger.info(f"♻️ Восстановлено напоминание для {event_id}")
 
     except Exception as e:
-        logger.error(f"🔥 Ошибка восстановления: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка восстановления: {str(e)}", exc_info=True)
 
 def main():
     global db
@@ -775,13 +772,12 @@ def main():
         .persistence(persistence)
         .build()
     )
-    application.bot_data['db'] = db
+    # application.bot_data['db'] = db
 
     application.job_queue.run_once(
         callback=restore_reminders,
-        when=10,
-        data=db,  # <-- Явная передача экземпляра БД
-        name="init_restore_reminders"
+        when=5,
+        name="init_restore"
     )
 
     # application.post_init(restore_reminders)
