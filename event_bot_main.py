@@ -187,30 +187,30 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # Админские функции
-def get_event_by_id(self, event_id):
-    cursor = self.conn.cursor()
-    cursor.execute('''
-        SELECT
-            e.id,
-            e.max_participants,
-            e.end_date,
-            e.event_time,
-            COUNT(r.user_id) as current_participants
-        FROM events e
-        LEFT JOIN registrations r ON e.id = r.event_id
-        WHERE e.id = ?
-        GROUP BY e.id
-    ''', (event_id,))
-    result = cursor.fetchone()
-    if result:
-        return {
-            'id': result[0],
-            'max_participants': result[1],
-            'end_date': result[2],
-            'event_time': result[3],
-            'current_participants': result[4]
-        }
-    return None
+# def get_event_by_id(self, event_id):
+#     cursor = self.conn.cursor()
+#     cursor.execute('''
+#         SELECT
+#             e.id,
+#             e.max_participants,
+#             e.end_date,
+#             e.event_time,
+#             COUNT(r.user_id) as current_participants
+#         FROM events e
+#         LEFT JOIN registrations r ON e.id = r.event_id
+#         WHERE e.id = ?
+#         GROUP BY e.id
+#     ''', (event_id,))
+#     result = cursor.fetchone()
+#     if result:
+#         return {
+#             'id': result[0],
+#             'max_participants': result[1],
+#             'end_date': result[2],
+#             'event_time': result[3],
+#             'current_participants': result[4]
+#         }
+#     return None
 
 async def handle_back_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -233,7 +233,7 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [f"{i + 1}. @{username}" for i, username in enumerate(participants)]
         ) if participants else "Нет участников"
 
-        # Клавиатура для пункта  просмотра участников
+        # Клавиатура для пункта просмотра участников
         keyboard = [
             [InlineKeyboardButton("📨 Отправить сообщение", callback_data=f"sendmsg_{event_id}")],
             [InlineKeyboardButton("↩️ Назад", callback_data="adminevents")]
