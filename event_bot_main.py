@@ -27,7 +27,16 @@ config = configparser.ConfigParser()
 config.read('bot_config.ini', encoding='utf-8')
 
 TOKEN = config['Main']['TOKEN']
-ADMIN_ID = config.getint('Main', 'ADMIN_ID')  # Преобразование ADMIN_ID в int
+
+try:
+    ADMIN_IDS = [
+        int(admin_id.strip())
+        for admin_id in config.get('Main', 'ADMIN_ID').split(',')
+        if admin_id.strip().isdigit()
+    ]
+except (configparser.NoOptionError, configparser.NoSectionError):
+    ADMIN_IDS = []
+
 DATABASE_NAME = config['Main']['DATABASE_NAME']
 
 persistence = PicklePersistence(filepath="conversationbot")
@@ -45,18 +54,64 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 
 # Состояния для ConversationHandler
 (
-    CREATE_MAX, CREATE_END, CREATE_TIME,
-    EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM
-) = range(6)
+    CREATE_MAX, CREATE_END, CREATE_TIME, CREATE_INFO,
+    EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM,
+    WAITING_FOR_MESSAGE, WAITING_FOR_LINK, CONFIRM_LINK,
+    REMOVE_USER_START, REMOVE_USER_SELECT
+) = range(12)
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    return user_id in ADMIN_IDS
+    #return user_id == ADMIN_ID
 
-db = database.Database(DATABASE_NAME)
+global db
+db = None
+
+
+# Отправка уведомлений
+async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        event_id = context.job.data
+        event = db.get_event_by_id(event_id)
+
+        if not event:
+            logger.error(f"Напоминание: мероприятие {event_id} не найдено")
+            return
+
+        # Получаем время в формате ЧЧ:ММ
+        event_time = datetime.strptime(event['event_time'], "%H:%M").strftime("%H:%M")
+
+        try:
+            with open("message.txt", "r", encoding="utf-8") as f:
+                template = f.read()
+            if "{event_time}" not in template:
+                template += "\nВремя начала: {event_time}"
+        except FileNotFoundError:
+            template = (
+                "Привет! 🐴\n"
+                "Рабочая сессия начнется в {event_time}.\n"
+                "Ссылка: ...\n"
+                "Оля #КоньНеВалялся"
+            )
+
+        message_text = template.format(event_time=event_time)
+
+        # Отправка участникам
+        participants = db.get_event_participant_ids(event_id)
+        for user_id in participants:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text
+                )
+            except Exception as e:
+                logger.error(f"Ошибка отправки {user_id}: {str(e)}")
+
+    except Exception as e:
+        logger.error(f"Ошибка в send_reminder: {str(e)}", exc_info=True)
 
 # Обработчики команд
-
 async def check_admin_access(update: Update) -> bool:
     user = update.effective_user
     if not is_admin(user.id):
@@ -65,10 +120,12 @@ async def check_admin_access(update: Update) -> bool:
         return False
     return True
 
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Создание мероприятия отменено.")
     context.user_data.clear()
     return ConversationHandler.END
+
 
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -77,10 +134,13 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
+
 async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         events = db.get_all_events()
         message = update.message or update.callback_query.message
+        user = update.effective_user
+        is_admin_user = is_admin(user.id)
 
         if not events:
             await message.reply_text("Сейчас нет доступных мероприятий.")
@@ -88,18 +148,21 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for event in events:
-            event_id, max_p, end_date, event_time, current = event
+            event_id, max_p, end_date, event_time, info, current = event
             available = max_p - current
-            # Форматируем дату и время
             formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-            event_text = f"{formatted_date} {event_time}\n , мест: {available}/{max_p}" #🎫 Свободно: {available}/{max_p}
+            event_text = (
+                f"{formatted_date} {event_time} | {available}/{max_p} | {info}"
+                if is_admin_user
+                else f"{formatted_date} {event_time} | {info}"
+            )
             keyboard.append([InlineKeyboardButton(event_text, callback_data=f"event_{event_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text("Выберите мероприятие:", reply_markup=reply_markup)
 
     except Exception as e:
-        logger.error(f"Error in show_events: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка в show_events: {str(e)}", exc_info=True)
         await message.reply_text("❌ Произошла ошибка при загрузке мероприятий")
 
 
@@ -128,32 +191,6 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ К сожалению, все места заняты!")
 
 
-# Админские функции
-def get_event_by_id(self, event_id):
-    cursor = self.conn.cursor()
-    cursor.execute('''
-        SELECT
-            e.id,
-            e.max_participants,
-            e.end_date,
-            e.event_time,
-            COUNT(r.user_id) as current_participants
-        FROM events e
-        LEFT JOIN registrations r ON e.id = r.event_id
-        WHERE e.id = ?
-        GROUP BY e.id
-    ''', (event_id,))
-    result = cursor.fetchone()
-    if result:
-        return {
-            'id': result[0],
-            'max_participants': result[1],
-            'end_date': result[2],  # сохраняем как строку
-            'event_time': result[3],
-            'current_participants': result[4]
-        }
-    return None
-
 async def handle_back_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -165,69 +202,238 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data.startswith("view_"):
-        # Проверка прав администратора
-        if not await check_admin_access(update):
+        event_id = int(query.data.split("_")[1])
+
+        # Получаем полные данные о мероприятии
+        event = db.get_event_by_id(event_id)
+        if not event:
+            await query.edit_message_text("❌ Мероприятие не найдено")
             return
 
-        event_id = int(query.data.split("_")[1])
-        participants = db.get_event_participants(event_id)
+        # Форматируем дату и время
+        formatted_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
+        event_time = event['event_time']
 
-        participants_text = "Участники:\n" + "\n".join(
-            [f"{i + 1}. @{username}" for i, username in enumerate(participants)]
-        ) if participants else "Нет участников"
-
-        await query.edit_message_text(
-            text=f"📋 Список участников мероприятия:\n\n{participants_text}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("↩️ Назад", callback_data="adminevents")]
-            ])
+        # Формируем текст сообщения
+        message_text = (
+            f"📌 Мероприятие ID: {event_id}\n"
+            f"📅 Дата: {formatted_date}\n"
+            f"⏰ Время: {event_time}\n"
+            f"👥 Участники: {event['current_participants']}/{event['max_participants']}\n"
+            f"📝 Описание: {event['info'] or 'Без описания'}\n\n"
+            "🗒 Список участников:\n"
         )
-        return
 
-    elif query.data == "adminevents":
-        await admin_events(update, context)
+        # Добавляем участников
+        participants = db.get_event_participants(event_id)
+        if participants:
+            message_text += "\n".join([f"• @{username}" for username in participants])
+        else:
+            message_text += "Нет участников"
+
+        # Создаем клавиатуру
+        keyboard = [
+            [
+                InlineKeyboardButton("📨 Сообщение", callback_data=f"sendmsg_{event_id}"),
+                InlineKeyboardButton("🔗 Ссылка", callback_data=f"sendlink_{event_id}")
+            ],
+            [
+                InlineKeyboardButton("🗑 Удалить участника", callback_data=f"removeuser_{event_id}"),
+                InlineKeyboardButton("↩️ Назад", callback_data="adminevents")
+            ]
+        ]
+        await query.edit_message_text(
+            text=message_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     elif query.data.startswith("delete_"):
         event_id = int(query.data.split("_")[1])
         context.user_data['delete_event_id'] = event_id
+
+        # Запрос подтверждения
         keyboard = [
             [InlineKeyboardButton("✅ Да", callback_data="confirm_delete")],
             [InlineKeyboardButton("❌ Нет", callback_data="cancel_delete")]
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            "Вы уверены, что хотите удалить это мероприятие?",
-            reply_markup=reply_markup
+            "❓ Вы уверены, что хотите удалить мероприятие?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return DELETE_CONFIRM
+    else:
+        await query.edit_message_text("❌ Неизвестное действие")
+
+
+async def send_message_to_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not await check_admin_access(update):
+        return ConversationHandler.END
+
+    event_id = int(query.data.split('_')[1])
+    context.user_data['sendmsg_event_id'] = event_id
+
+    await query.edit_message_text("✍️ Введите сообщение для участников:")
+    return WAITING_FOR_MESSAGE
+
+
+async def send_link_to_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not await check_admin_access(update):
+        return ConversationHandler.END
+
+    event_id = int(query.data.split('_')[1])
+    context.user_data['sendlink_event_id'] = event_id
+
+    await query.edit_message_text("🔗 Введите ссылку для участников:")
+    return WAITING_FOR_LINK
+
+
+async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    event_id = context.user_data.get('sendlink_event_id')
+    participants = db.get_event_participant_ids(event_id)
+    message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
+        link=context.user_data.get('link', '')
+    )
+
+    success = 0
+    for user_id in participants:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                disable_web_page_preview=False
+            )
+            success += 1
+        except Exception as e:
+            logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
+
+    await query.edit_message_text(f"✅ Сообщение отправлено {success} участникам!")
+    return ConversationHandler.END
+
+
+async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    link = update.message.text
+    context.user_data['link'] = link
+
+    try:
+        with open("link-template.txt", "r", encoding="utf-8") as f:
+            template = f.read()
+    except FileNotFoundError:
+        template = "Ссылка на мероприятие: {link}"
+
+    message_text = template.format(link=link)
+    context.user_data['generated_message'] = message_text
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Отправить", callback_data="confirm_link")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_link")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        f"📝 Сообщение для отправки:\n\n{message_text}\n\nПодтвердите отправку:",
+        reply_markup=reply_markup
+    )
+    return CONFIRM_LINK
+
+
+async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message_text = update.message.text
+    event_id = context.user_data.get('sendmsg_event_id')
+    participant_ids = db.get_event_participant_ids(event_id)
+
+    # Исключаем администратора
+    participant_ids = [uid for uid in participant_ids if uid not in ADMIN_IDS]
+
+    # Отправка сообщений
+    success, failed = 0, 0
+    for user_id in participant_ids:
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message_text)
+            success += 1
+        except Exception as e:
+            logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
+            failed += 1
+
+    await update.message.reply_text(
+        f"✅ Сообщение отправлено {success} участникам.\n"
+        f"❌ Не удалось отправить: {failed}"
+    )
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def remove_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    event_id = int(query.data.split("_")[1])
+    context.user_data["current_event_id"] = event_id
+
+    # Получаем список участников
+    participants = db.get_event_participants(event_id)
+
+    if not participants:
+        await query.edit_message_text("❌ В этом мероприятии нет участников")
+        return ConversationHandler.END
+
+    # Создаем кнопки с участниками
+    keyboard = [
+        [InlineKeyboardButton(f"@{username}", callback_data=f"remove_{username}")]
+        for username in participants
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "Выберите участника для удаления:", reply_markup=reply_markup)
+
+    return REMOVE_USER_SELECT
+
+
+async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    username = query.data.split("_")[1]
+    event_id = context.user_data["current_event_id"]
+
+    # Получаем user_id по username
+    user_id = db.get_user_id_by_username(username)
+
+    if user_id:
+        db.delete_registration(user_id, event_id)
+        await query.edit_message_text(f"✅ Участник @{username} удален!")
+    else:
+        await query.edit_message_text("❌ Пользователь не найден")
+
+    return ConversationHandler.END
 
 
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         query = update.callback_query
-        await query.answer()
+        event_id = context.user_data.get('delete_event_id')
 
-        if query.data == "confirm_delete":
-            event_id = context.user_data.get('delete_event_id')
-            if event_id:
-                event_exists = any(e[0] == event_id for e in db.get_all_events())
-                if not event_exists:
-                    await query.edit_message_text("❌ Мероприятие уже было удалено")
-                    return ConversationHandler.END
-                else:
-                    db.delete_event(event_id)
-                    await query.edit_message_text("✅ Мероприятие успешно удалено!")
+        # Удаляем все задачи мероприятия
+        job_name = f"reminder_{event_id}"
+        for job in context.job_queue.jobs():
+            if job.name == job_name:
+                job.schedule_removal()
 
-            else:
-                await query.edit_message_text("❌ Ошибка: мероприятие не найдено")
-        else:
-            await query.edit_message_text("❌ Удаление отменено")
+        # Удаляем из БД
+        db.delete_event(event_id)
+        await query.edit_message_text("✅ Мероприятие удалено!")
 
-        context.user_data.clear()
-        return ConversationHandler.END
     except Exception as e:
-            logger.error(f"Error deleting event: {str(e)}")
-            await query.edit_message_text("❌ Ошибка при удалении мероприятия")
+        logger.error(f"Ошибка: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка удаления")
 
 
 async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -235,10 +441,8 @@ async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin_access(update):
         return ConversationHandler.END
 
-    # Очищаем предыдущие данные
     context.user_data.clear()
 
-    # Получаем сообщение из callback_query или message
     query = update.callback_query
     if query:
         await query.answer()
@@ -247,19 +451,7 @@ async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message
 
     await message.reply_text("Введите количество участников:")
-    return CREATE_MAX # Явное возвращение первого состояния
-
-
-# async def create_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#     try:
-#         context.user_data['event_name'] = update.message.text
-#         logger.info(f"Received event name: {context.user_data['event_name']}")
-#
-#         await update.message.reply_text("Введите максимальное количество участников:")
-#         return CREATE_MAX
-#     except Exception as e:
-#         logger.error(f"Error in create_name: {str(e)}")
-#         return ConversationHandler.END
+    return CREATE_MAX
 
 
 async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,6 +467,70 @@ async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Некорректное число! Введите целое положительное число:")
         return CREATE_MAX
+
+
+async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    time_str = update.message.text
+    try:
+        event_time = datetime.strptime(time_str, "%H:%M").time()
+        context.user_data['event_time'] = time_str
+
+        await update.message.reply_text("Введите описание мероприятия:")
+        return CREATE_INFO
+
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат времени! Используйте ЧЧ:ММ")
+        return CREATE_TIME
+
+
+async def create_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        info = update.message.text
+        context.user_data["info"] = info
+
+        # Проверяем наличие всех данных
+        if "event_max" not in context.user_data:
+            await update.message.reply_text("❌ Ошибка: не указано количество участников!")
+            return ConversationHandler.END
+
+        if "end_date" not in context.user_data:
+            await update.message.reply_text("❌ Ошибка: не указана дата мероприятия!")
+            return ConversationHandler.END
+
+        if "event_time" not in context.user_data:
+            await update.message.reply_text("❌ Ошибка: не указано время мероприятия!")
+            return ConversationHandler.END
+
+        # Получение данных
+        max_p = context.user_data["event_max"]
+        end_date = context.user_data["end_date"].strftime("%Y-%m-%d")  # Конвертируем дату в строку
+        event_time = context.user_data["event_time"]
+
+        event_id = db.add_event(max_p, end_date, event_time, info)  # Все 4 параметра!
+
+        # Планируем напоминание
+        event_datetime = datetime.combine(
+            context.user_data["end_date"],  # Объект date
+            datetime.strptime(event_time, "%H:%M").time()
+        )
+        reminder_time = event_datetime - timedelta(hours=3)
+
+        if reminder_time > datetime.now():
+            delta = (reminder_time - datetime.now()).total_seconds()
+            context.job_queue.run_once(
+                send_reminder,
+                when=delta,
+                data=event_id,
+                name=f"reminder_{event_id}"
+            )
+
+        await update.message.reply_text("✅ Мероприятие успешно создано!")
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"Ошибка в create_info: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Внутренняя ошибка при создании мероприятия.")
+        return ConversationHandler.END
 
 
 async def create_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -295,37 +551,6 @@ async def create_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CREATE_END
 
 
-async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    time_str = update.message.text
-    logger.info(f"Received time: {time_str}")
-    try:
-        # Парсим время и преобразуем в строку
-        event_time = datetime.strptime(time_str, "%H:%M").time()
-        time_formatted = event_time.strftime("%H:%M")
-
-        # Проверяем наличие всех необходимых данных
-        if not all(key in context.user_data for key in ['event_max', 'end_date']):
-            logger.error("Missing required data in context")
-            await update.message.reply_text("❌ Ошибка: потеряны данные мероприятия. Начните заново.")
-            return ConversationHandler.END
-
-        # Получаем данные из контекста
-        max_p = context.user_data['event_max']
-        end_date = context.user_data['end_date'].strftime("%Y-%m-%d")  # Конвертируем дату в строку
-
-        # Добавляем мероприятие в БД
-        db.add_event(max_p, end_date, time_formatted)
-        await update.message.reply_text("✅ Мероприятие успешно создано!")
-        return ConversationHandler.END
-
-    except ValueError:
-        await update.message.reply_text("❌ Некорректный формат времени! Используйте ЧЧ:ММ:")
-        return CREATE_TIME
-    except Exception as e:
-        logger.error(f"Error in create_time: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Произошла внутренняя ошибка при создании мероприятия")
-        return ConversationHandler.END
-
 async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not await check_admin_access(update):
@@ -339,10 +564,20 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for event in events:
-            event_id, max_p, end_date, event_time, current = event
-            text = f"{end_date} {event_time}({current}/{max_p})"
+            event_id, max_p, end_date, event_time, info, current = event
+            available = max_p - current
+
+            # Форматируем дату в DD.MM
+            day_month = end_date.split("-")[2] + "." + end_date.split("-")[1]
+
+            # Формируем текст основной кнопки
+            event_text = f"{day_month} {event_time}"
+            # if info and len(info) > 0:
+            #     event_text += f" | {info[:15]}..."  # Обрезаем до 15 символов
+
+            # Добавляем кнопки в один ряд
             keyboard.append([
-                InlineKeyboardButton(text, callback_data=f"view_{event_id}"),
+                InlineKeyboardButton(event_text, callback_data=f"view_{event_id}"),
                 InlineKeyboardButton("✏️", callback_data=f"edit_{event_id}"),
                 InlineKeyboardButton("❌", callback_data=f"delete_{event_id}")
             ])
@@ -357,21 +592,52 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message or update.callback_query.message
-    events = db.get_user_events(update.effective_user.id)
+    try:
+        user_id = update.effective_user.id
+        events = db.get_user_events(user_id)
+        message = update.message or update.callback_query.message
 
-    if not events:
-        await message.reply_text("Вы не зарегистрированы ни на одно мероприятие")
-        return
+        if not events:
+            await message.reply_text("📭 Вы не зарегистрированы ни на одно мероприятие")
+            return
 
-    keyboard = []
-    for event in events:
-        event_id, end_date, event_time = event
-        text = f"( {end_date.split()[0]}) {event_time}"
-        keyboard.append([InlineKeyboardButton(text, callback_data=f"unreg_{event_id}")])
+        keyboard = []
+        for event in events:
+            try:
+                if len(event) < 4:
+                    logger.error(f"Некорректные данные мероприятия: {event}")
+                    continue
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await message.reply_text("Ваши мероприятия:", reply_markup=reply_markup)
+                event_id, end_date, event_time, info = event
+
+                info = info or "Без описания"
+                info_display = info[:20] + "..." if len(info) > 20 else info
+
+                try:
+                    formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+                except ValueError:
+                    formatted_date = "Некорр. дата"
+                    logger.error(f"Ошибка формата даты: {end_date}")
+
+                button_text = f"{formatted_date} {event_time} | {info_display}"
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"unreg_{event_id}")])
+
+            except Exception as e:
+                logger.error(f"Ошибка обработки мероприятия {event}: {str(e)}", exc_info=True)
+                continue
+
+        if not keyboard:
+            await message.reply_text("❌ Ошибка формирования списка мероприятий")
+            return
+
+        await message.reply_text(
+            "📌 Ваши мероприятия:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка в my_events: {str(e)}", exc_info=True)
+        await message.reply_text("⚠️ Произошла внутренняя ошибка")
 
 
 async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -392,11 +658,12 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         event_id = int(query.data.split("_")[1])
         context.user_data['edit_event_id'] = event_id
 
-        # Исправленные callback_data для кнопок
+        # клавиатура берется отсюда
         keyboard = [
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
             [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")],
-            [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")]
+            [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")],
+            [InlineKeyboardButton("Описание", callback_data="field_info")]  # Новая кнопка
         ]
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -413,103 +680,157 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     try:
-        # Исправляем разбор callback_data
-        _, field = query.data.split('_', 1)  # Разделяем только на 2 части
+        _, field = query.data.split('_', 1)
+        context.user_data['edit_field'] = field
 
-        event_id = context.user_data['edit_event_id']
+        event_id = context.user_data.get('edit_event_id')
+        if not event_id:
+            await query.edit_message_text("❌ Мероприятие не выбрано!")
+            return ConversationHandler.END
+
+        # Получаем данные мероприятия
         event = db.get_event_by_id(event_id)
-
         if not event:
             await query.edit_message_text("❌ Мероприятие не найдено!")
             return ConversationHandler.END
 
-        context.user_data['edit_field'] = field
-
-        # Обновляем данные поля
         field_data = {
             'max_participants': ('максимальное количество участников', event['max_participants']),
             'end_date': ('дату окончания', event['end_date']),
-            'event_time': ('время мероприятия', event['event_time'])
+            'event_time': ('время мероприятия', event['event_time']),
+            'info': ('описание', event['info'])
         }
 
+        if field not in field_data:
+            await query.edit_message_text("❌ Некорректное поле для редактирования!")
+            return ConversationHandler.END
+
         field_name, current_value = field_data[field]
+        message_text = (
+            f"Текущее {field_name}:\n"
+            f"`{current_value}`\n\n"
+            f"Введите новое значение:"
+        )
+
         await query.edit_message_text(
-            f"Текущее {field_name}: {current_value}\nВведите новое значение:"
+            message_text,
+            parse_mode="MarkdownV2"  # Для корректного отображения `
         )
         return EDIT_VALUE
 
     except ValueError as e:
-        logger.error(f"Error splitting callback_data: {str(e)}")
-        await query.edit_message_text("❌ Ошибка в обработке запроса")
+        logger.error(f"Ошибка разбора callback_data: {query.data} -> {str(e)}")
+        await query.edit_message_text("❌ Ошибка обработки запроса")
         return ConversationHandler.END
-    except KeyError as e:
-        logger.error(f"Invalid field: {str(e)}")
-        await query.edit_message_text("❌ Некорректное поле для редактирования")
-        return ConversationHandler.END
+
     except Exception as e:
-        logger.error(f"Error in edit_choice: {str(e)}", exc_info=True)
-        await query.edit_message_text("❌ Произошла внутренняя ошибка")
+        logger.error(f"Ошибка в edit_choice: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Внутренняя ошибка")
         return ConversationHandler.END
+
 
 async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_data = context.user_data
-        field = user_data['edit_field']
-        value = update.message.text
-        event_id = user_data['edit_event_id']
+        field = user_data.get("edit_field")
+        value = update.message.text.strip()
+        event_id = user_data.get("edit_event_id")
+
+        if not all([field, event_id]):
+            await update.message.reply_text("❌ Сессия редактирования устарела!")
+            return ConversationHandler.END
+
+        # Получаем актуальные данные мероприятия
         event = db.get_event_by_id(event_id)
+        if not event:
+            await update.message.reply_text("❌ Мероприятие не найдено!")
+            return ConversationHandler.END
 
-        # Обработка времени
-        if field == 'event_time':
-            try:
-                # Проверяем формат времени
-                datetime.strptime(value, "%H:%M")
-                db.update_event_field(event_id, 'event_time', value)
-                await update.message.reply_text("✅ Время мероприятия обновлено!")
-                return ConversationHandler.END
-            except ValueError:
-                await update.message.reply_text("❌ Неверный формат времени! Используйте ЧЧ:ММ")
-                return EDIT_VALUE
-
-        # Обработка даты
-        elif field == 'end_date':
-            try:
-                datetime.strptime(value, "%Y-%m-%d")
-                if datetime.strptime(value, "%Y-%m-%d").date() < datetime.now().date():
-                    await update.message.reply_text("❌ Дата не может быть в прошлом!")
-                    return EDIT_VALUE
-                db.update_event_field(event_id, field, value)
-                await update.message.reply_text("✅ Дата обновлена!")
-                return ConversationHandler.END
-            except ValueError:
-                await update.message.reply_text("❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД")
-                return EDIT_VALUE
-
-        # Обработка максимального количества участников
-        elif field == 'max_participants':
+        # Обработка разных полей
+        if field == "max_participants":
             try:
                 new_max = int(value)
-                if new_max < event['current_participants']:
-                    await update.message.reply_text(f"❌ Нельзя установить меньше {event['current_participants']}!")
+                if new_max < event["current_participants"]:
+                    await update.message.reply_text(
+                        f"⚠️ Нельзя установить меньше {event['current_participants']} (уже зарегистрированные участники)!"
+                    )
                     return EDIT_VALUE
                 db.update_event_field(event_id, field, new_max)
-                await update.message.reply_text("✅ Максимальное количество участников обновлено!")
-                return ConversationHandler.END
+                await update.message.reply_text("✅ Лимит участников обновлен!")
+
             except ValueError:
                 await update.message.reply_text("❌ Введите целое число!")
                 return EDIT_VALUE
 
-    except Exception as e:
-        logger.error(f"Error in edit_value: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Произошла внутренняя ошибка")
+        elif field == "end_date":
+            try:
+                parsed_date = datetime.strptime(value, "%Y-%m-%d").date()
+                if parsed_date < datetime.now().date():
+                    await update.message.reply_text("❌ Дата не может быть в прошлом!")
+                    return EDIT_VALUE
+                db.update_event_field(event_id, field, value)
+                await update.message.reply_text("✅ Дата обновлена!")
+
+            except ValueError:
+                await update.message.reply_text("❌ Формат: ГГГГ-ММ-ДД")
+                return EDIT_VALUE
+
+        elif field == "event_time":
+            try:
+                datetime.strptime(value, "%H:%M")  # Валидация формата
+                db.update_event_field(event_id, field, value)
+                await update.message.reply_text("✅ Время обновлено!")
+
+            except ValueError:
+                await update.message.reply_text("❌ Формат: ЧЧ:ММ")
+                return EDIT_VALUE
+
+        elif field == "info":
+            if len(value) > 500:
+                await update.message.reply_text("❌ Описание слишком длинное (макс. 500 символов)")
+                return EDIT_VALUE
+            db.update_event_field(event_id, "info", value)
+            await update.message.reply_text("✅ Описание обновлено!")
+
+        # Обновляем напоминание если нужно
+        if field in ("end_date", "event_time"):
+            event = db.get_event_by_id(event_id)
+            end_date = datetime.strptime(event["end_date"], "%Y-%m-%d").date()
+            event_time = datetime.strptime(event["event_time"], "%H:%M").time()
+            event_datetime = datetime.combine(end_date, event_time)
+            reminder_time = event_datetime - timedelta(hours=3)
+
+            # Удаляем старую задачу
+            job_name = f"reminder_{event_id}"
+            for job in context.job_queue.jobs():
+                if job.name == job_name:
+                    job.schedule_removal()
+
+            # Создаем новую задачу если время актуально
+            if reminder_time > datetime.now():
+                delta = (reminder_time - datetime.now()).total_seconds()
+                context.job_queue.run_once(
+                    send_reminder,
+                    when=delta,
+                    data=event_id,
+                    name=job_name
+                )
+                logger.info(f"🔄 Напоминание для {event_id} перепланировано")
+
+        # Обратно в админ-панель
+        await admin_events(update, context)
         return ConversationHandler.END
 
+    except Exception as e:
+        logger.error(f"Ошибка в edit_value: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Критическая ошибка при обновлении")
+        return ConversationHandler.END
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     keyboard = []
 
-    if user.id == ADMIN_ID:
+    if user.id in ADMIN_IDS:
         buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in ADMIN_COMMANDS]
     else:
         buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in USER_COMMANDS]
@@ -529,7 +850,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Определяем сообщение и пользователя
     if update.callback_query:
         message = update.callback_query.message
         user = update.callback_query.from_user
@@ -585,15 +905,18 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif command == "myevents":
             await my_events(update, context)
         elif command == "adminevents":
-            if user_id == ADMIN_ID:
+            if user_id in ADMIN_IDS:
                 await admin_events(update, context)
             else:
                 await query.edit_message_text("⛔ Доступ запрещен!")
         elif command == "createevent":
-            if user_id == ADMIN_ID:
+            if user_id in ADMIN_IDS:
                 await create_event(update, context)
             else:
                 await query.edit_message_text("⛔ Доступ запрещен!")
+        elif command.startswith("sendmsg_"):
+            await send_message_to_participants(update, context)
+            return
         else:
             await query.edit_message_text("⚠️ Команда не распознана")
 
@@ -611,12 +934,60 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in error handler: {str(e)}")
 
+
+async def cancel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("✖️ Отправка ссылки отменена")
+    return ConversationHandler.END
+
+
+async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        db = database.Database(DATABASE_NAME)
+        events = db.get_all_events()
+
+        for event in events:
+            event_id = event[0]
+            end_date_str = event[2]
+            event_time_str = event[3]
+
+            # Парсим время
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            event_time = datetime.strptime(event_time_str, "%H:%M").time()
+            event_datetime = datetime.combine(end_date, event_time)
+            reminder_time = event_datetime - timedelta(hours=3)
+
+            # Создаем задачу если время актуально
+            if reminder_time > datetime.now():
+                delta = (reminder_time - datetime.now()).total_seconds()
+                context.job_queue.run_once(
+                    send_reminder,
+                    when=delta,
+                    data=event_id,
+                    name=f"reminder_{event_id}"
+                )
+                logger.info(f"♻️ Восстановлено напоминание для {event_id}")
+
+    except Exception as e:
+        logger.error(f"Ошибка восстановления: {str(e)}", exc_info=True)
+
+
 def main():
+    global db
+    db = database.Database(DATABASE_NAME)
+
     application = (
         Application.builder()
         .token(TOKEN)
         .persistence(persistence)
         .build()
+    )
+
+    application.job_queue.run_once(
+        callback=restore_reminders,
+        when=5,
+        name="init_restore"
     )
 
     application.add_error_handler(error_handler)
@@ -636,30 +1007,10 @@ def main():
             CallbackQueryHandler(create_event, pattern="^createevent$")
         ],
         states={
-            # CREATE_NAME: [
-            #     MessageHandler(
-            #         filters.TEXT & ~filters.COMMAND,
-            #         create_name
-            #     )
-            # ],
-            CREATE_MAX: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    create_max
-                )
-            ],
-            CREATE_END: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    create_end
-                )
-            ],
-            CREATE_TIME: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    create_time
-                )
-            ]
+            CREATE_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_max)],
+            CREATE_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_end)],
+            CREATE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_time)],
+            CREATE_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_info)]  # Добавлено
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         persistent=True,
@@ -669,20 +1020,23 @@ def main():
 
     edit_event_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(edit_event_start, pattern=r"^edit_\d+$")  # Только edit_ с цифрами
+            CallbackQueryHandler(edit_event_start, pattern=r"^edit_\d+$")  # Обработка кнопки "✏️"
         ],
         states={
             EDIT_CHOICE: [
-                CallbackQueryHandler(edit_choice, pattern=r"^field_(name|max_participants|end_date|event_time)$")
+                CallbackQueryHandler(edit_choice, pattern=r"^field_(max_participants|end_date|event_time|info)$")
             ],
             EDIT_VALUE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value)
             ]
         },
         fallbacks=[
-            CommandHandler('cancel', cancel),
+            CommandHandler("cancel", cancel_edit),
             CallbackQueryHandler(cancel_edit, pattern="^cancel_edit$")
         ],
+        map_to_parent={  # Важно: возврат в родительский ConversationHandler
+            ConversationHandler.END: ConversationHandler.END
+        },
         persistent=True,
         name="edit_event_conv"
     )
@@ -690,25 +1044,77 @@ def main():
 
     delete_event_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(admin_actions, pattern="^delete_")
+            CallbackQueryHandler(admin_actions, pattern=r"^delete_\d+$")
         ],
         states={
             DELETE_CONFIRM: [
-                CallbackQueryHandler(confirm_delete, pattern="^(confirm_delete|cancel_delete)$")
+                CallbackQueryHandler(confirm_delete, pattern="^confirm_delete$"),
+                CallbackQueryHandler(cancel_edit, pattern="^cancel_delete$")
             ]
         },
         fallbacks=[],
-        map_to_parent={  # Возвращаемся к родительскому состоянию
+        map_to_parent={
             ConversationHandler.END: ConversationHandler.END
-        }
+        },
+        persistent=True,  # Требует указания имени
+        name="delete_event_conv"  # Уникальное имя для обработчика
     )
     application.add_handler(delete_event_conv)
+
+    send_message_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(
+                send_message_to_participants,
+                pattern=r"^sendmsg_\d+$"  # Регулярное выражение для sendmsg_ + цифры
+            )
+        ],
+        states={
+            WAITING_FOR_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, send_message_handler)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        persistent=True,
+        name="send_message_conv"
+    )
+    application.add_handler(send_message_conv)
+
+    send_link_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(send_link_to_participants, pattern=r"^sendlink_\d+$")
+        ],
+        states={
+            WAITING_FOR_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_link_input)],
+            CONFIRM_LINK: [CallbackQueryHandler(confirm_link_sending, pattern="^confirm_link$")]
+        },
+        fallbacks=[
+            CallbackQueryHandler(lambda u, c: cancel_link(u, c), pattern="^cancel_link$")
+        ],
+        map_to_parent={ConversationHandler.END: ConversationHandler.END},
+        persistent=True,
+        name="send_link_conv"
+    )
+    application.add_handler(send_link_conv)
+
+    remove_user_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(remove_user_start, pattern=r"^removeuser_\d+$")
+        ],
+        states={
+            REMOVE_USER_SELECT: [
+                CallbackQueryHandler(remove_user_finish, pattern=r"^remove_")
+            ],
+        },
+        fallbacks = [CommandHandler("cancel", cancel)]
+    )
+    application.add_handler(remove_user_conv)
 
     # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
     application.add_handler(CallbackQueryHandler(edit_event_start, pattern="^edit_"))
     application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^unreg_"))
-    application.add_handler(CallbackQueryHandler(admin_actions, pattern="^(view|delete)_"))
+    application.add_handler(CallbackQueryHandler(admin_actions, pattern=r"^view_\d+$"))
+    application.add_handler(CallbackQueryHandler(send_message_to_participants, pattern=r"^sendmsg_\d+$"))
     application.add_handler(CallbackQueryHandler(menu_handler))
     application.add_handler(CallbackQueryHandler(handle_back_button, pattern="^adminevents$"))
 
