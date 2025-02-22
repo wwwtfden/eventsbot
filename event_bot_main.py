@@ -56,8 +56,8 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 (
     CREATE_MAX, CREATE_END, CREATE_TIME, CREATE_INFO,
     EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM,
-    WAITING_FOR_MESSAGE
-) = range(8)
+    WAITING_FOR_MESSAGE, WAITING_FOR_LINK, CONFIRM_LINK
+) = range(10)
 
 
 def is_admin(user_id: int) -> bool:
@@ -206,6 +206,7 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = [
             [InlineKeyboardButton("📨 Отправить сообщение", callback_data=f"sendmsg_{event_id}")],
+            [InlineKeyboardButton("🔗 Отправить ссылку", callback_data=f"sendlink_{event_id}")],
             [InlineKeyboardButton("↩️ Назад", callback_data="adminevents")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -246,6 +247,72 @@ async def send_message_to_participants(update: Update, context: ContextTypes.DEF
 
     await query.edit_message_text("✍️ Введите сообщение для участников:")
     return WAITING_FOR_MESSAGE
+
+
+async def send_link_to_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not await check_admin_access(update):
+        return ConversationHandler.END
+
+    event_id = int(query.data.split('_')[1])
+    context.user_data['sendlink_event_id'] = event_id
+
+    await query.edit_message_text("🔗 Введите ссылку для участников:")
+    return WAITING_FOR_LINK
+
+
+async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    event_id = context.user_data.get('sendlink_event_id')
+    participants = db.get_event_participant_ids(event_id)
+    message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
+        link=context.user_data.get('link', '')
+    )
+
+    success = 0
+    for user_id in participants:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                disable_web_page_preview=False
+            )
+            success += 1
+        except Exception as e:
+            logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
+
+    await query.edit_message_text(f"✅ Сообщение отправлено {success} участникам!")
+    return ConversationHandler.END
+
+
+async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    link = update.message.text
+    context.user_data['link'] = link
+
+    try:
+        with open("link-template.txt", "r", encoding="utf-8") as f:
+            template = f.read()
+    except FileNotFoundError:
+        template = "Ссылка на мероприятие: {link}"
+
+    message_text = template.format(link=link)
+    context.user_data['generated_message'] = message_text
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Отправить", callback_data="confirm_link")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_link")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        f"📝 Сообщение для отправки:\n\n{message_text}\n\nПодтвердите отправку:",
+        reply_markup=reply_markup
+    )
+    return CONFIRM_LINK
 
 
 async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -764,6 +831,13 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in error handler: {str(e)}")
 
 
+async def cancel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("✖️ Отправка ссылки отменена")
+    return ConversationHandler.END
+
+
 async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
     try:
         # Создаем новый экземпляр БД
@@ -900,6 +974,23 @@ def main():
         name="send_message_conv"
     )
     application.add_handler(send_message_conv)
+
+    send_link_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(send_link_to_participants, pattern=r"^sendlink_\d+$")
+        ],
+        states={
+            WAITING_FOR_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_link_input)],
+            CONFIRM_LINK: [CallbackQueryHandler(confirm_link_sending, pattern="^confirm_link$")]
+        },
+        fallbacks=[
+            CallbackQueryHandler(lambda u, c: cancel_link(u, c), pattern="^cancel_link$")
+        ],
+        map_to_parent={ConversationHandler.END: ConversationHandler.END},
+        persistent=True,
+        name="send_link_conv"
+    )
+    application.add_handler(send_link_conv)
 
     # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
