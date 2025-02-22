@@ -13,7 +13,6 @@ class Database:
         self.conn = sqlite3.connect(DATABASE_NAME)
         self.create_tables()
 
-    # database.py → метод create_tables()
     def create_tables(self):
         cursor = self.conn.cursor()
         cursor.execute('''
@@ -71,20 +70,23 @@ class Database:
     def get_all_events(self):
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT
+            SELECT 
                 e.id,
                 e.max_participants,
                 e.end_date,
                 e.event_time,
-                e.info,  -- Добавлено
+                e.info,
                 COUNT(r.user_id) as current_participants
             FROM events e
             LEFT JOIN registrations r ON e.id = r.event_id
+            WHERE datetime(e.end_date || ' ' || e.event_time) > datetime('now', '-6 hours')
             GROUP BY e.id
         ''')
         return cursor.fetchall()
 
     def register_user(self, user_id, username, event_id):
+        if user_id in self.get_event_participant_ids(event_id):
+            return False
         cursor = self.conn.cursor()
         try:
             cursor.execute('''
@@ -125,13 +127,23 @@ class Database:
 
     def get_user_events(self, user_id):
         cursor = self.conn.cursor()
-        cursor.execute('''
-            SELECT e.id, e.end_date, e.event_time
-            FROM events e
-            JOIN registrations r ON e.id = r.event_id
-            WHERE r.user_id = ?
-        ''', (user_id,))
-        return cursor.fetchall()
+        try:
+            cursor.execute('''
+                SELECT 
+                    e.id, 
+                    e.end_date, 
+                    e.event_time,
+                    COALESCE(e.info, 'Без описания')  -- Заменяем NULL
+                FROM events e
+                JOIN registrations r ON e.id = r.event_id
+                WHERE r.user_id = ?
+            ''', (user_id,))
+            return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Ошибка БД: {str(e)}")
+            return []
+        finally:
+            cursor.close()
 
     def delete_registration(self, user_id, event_id):
         cursor = self.conn.cursor()
@@ -158,12 +170,12 @@ class Database:
     def get_event_by_id(self, event_id):
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT
+            SELECT 
                 e.id,
                 e.max_participants,
                 e.end_date,
                 e.event_time,
-                e.info,  -- Исправлено
+                e.info,
                 COUNT(r.user_id) as current_participants
             FROM events e
             LEFT JOIN registrations r ON e.id = r.event_id
@@ -171,13 +183,25 @@ class Database:
             GROUP BY e.id
         ''', (event_id,))
         result = cursor.fetchone()
+
         if result:
             return {
                 'id': result[0],
                 'max_participants': result[1],
                 'end_date': result[2],
                 'event_time': result[3],
-                'info': result[4],  # Добавлено поле
+                'info': result[4],
                 'current_participants': result[5]
             }
         return None
+
+    def get_user_id_by_username(self, username):
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT user_id FROM registrations WHERE username = ?", (username,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+    def delete_registration(self, user_id, event_id):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+        self.conn.commit()
