@@ -54,10 +54,10 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 
 # Состояния для ConversationHandler
 (
-    CREATE_MAX, CREATE_END, CREATE_TIME,
+    CREATE_MAX, CREATE_END, CREATE_TIME, CREATE_INFO,
     EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM,
     WAITING_FOR_MESSAGE
-) = range(7)
+) = range(8)
 
 
 def is_admin(user_id: int) -> bool:
@@ -72,46 +72,43 @@ db = None
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     try:
+        logger.info(f"Попытка отправить напоминание для мероприятия {context.job.data}")
         event_id = context.job.data
         event = db.get_event_by_id(event_id)
-
-        # Дополнительная проверка актуальности мероприятия
-        event_datetime = datetime.combine(
-            datetime.strptime(event['end_date'], "%Y-%m-%d").date(),
-            datetime.strptime(event['event_time'], "%H:%M").time()
-        )
-        if event_datetime < datetime.now():
-            logger.warning(f"⏳ Мероприятие {event_id} уже завершилось")
+        if not event:
+            logger.error(f"Мероприятие {event_id} не найдено!")
             return
 
-        participants = db.get_event_participant_ids(event_id)
-        participants = [uid for uid in participants if uid not in ADMIN_IDS]
-
-        event_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
-        event_time = datetime.strptime(event['event_time'], "%H:%M").strftime("%H:%M")
-        message_text = (
-            f"Привет! 🐴\n"
-            f"Напоминаю, что рабочая сессия начнется в {event_time}\n"
-            f"Ссылку на связь пришлю тебе за 5-10 минут до созвона, не пропусти 🤎"
-            f"Оля #КоньНеВалялся"
-            f"* время по мск"
-            f"* можно прийти позже/уйти раньше, но желательно об этом написать"
+        event_date = datetime.strptime(event['end_date'], "%Y-%m-%d").date()
+        event_time = datetime.strptime(event['event_time'], "%H:%M").time()
+        # Проверка актуальности времени
+        event_datetime = datetime.combine(
+            event_date,
+            event_time
         )
+        if event_datetime < datetime.now():
+            logger.warning(f"Мероприятие {event_id} уже завершилось")
+            return
 
-        success, failed = 0, 0
+        # Отправка сообщений участникам
+        participants = db.get_event_participant_ids(event_id)
         for user_id in participants:
             try:
-                logger.info(f"Отправка напоминания для {user_id}")
-                await context.bot.send_message(chat_id=user_id, text=message_text)
-                success += 1
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=(
+                        f"Привет! 🐴\n"
+                        f"Напоминаю, что рабочая сессия начнется в {event_time}\n"
+                        f"Ссылку на связь пришлю тебе за 5-10 минут до созвона, не пропусти 🤎"
+                        f"Оля #КоньНеВалялся"
+                        f"* время по мск"
+                        f"* можно прийти позже/уйти раньше, но желательно об этом написать"
+                    )
+                )
             except Exception as e:
-                logger.error(f"❌ Ошибка отправки пользователю {user_id}: {str(e)}")
-                failed += 1
-
-        logger.info(f"✅ Напоминание для мероприятия {event_id} отправлено: {success} успешно, {failed} ошибок")
-
+                logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
     except Exception as e:
-        logger.error(f"🔥 Критическая ошибка в send_reminder: {str(e)}", exc_info=True)
+        logger.error(f"Критическая ошибка в send_reminder: {str(e)}", exc_info=True)
 
 # Обработчики команд
 
@@ -135,6 +132,7 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
+
 async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         events = db.get_all_events()
@@ -146,18 +144,17 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for event in events:
-            event_id, max_p, end_date, event_time, current = event
+            event_id, max_p, end_date, event_time, info, current = event
             available = max_p - current
-            # Форматируем дату и время
             formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-            event_text = f"{formatted_date} {event_time}\n , мест: {available}/{max_p}"
+            event_text = f"{formatted_date} {event_time} | Мест: {available}/{max_p}\nОписание: {info}"
             keyboard.append([InlineKeyboardButton(event_text, callback_data=f"event_{event_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text("Выберите мероприятие:", reply_markup=reply_markup)
 
     except Exception as e:
-        logger.error(f"Error in show_events: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка в show_events: {str(e)}", exc_info=True)
         await message.reply_text("❌ Произошла ошибка при загрузке мероприятий")
 
 
@@ -186,32 +183,6 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ К сожалению, все места заняты!")
 
 
-# Админские функции
-# def get_event_by_id(self, event_id):
-#     cursor = self.conn.cursor()
-#     cursor.execute('''
-#         SELECT
-#             e.id,
-#             e.max_participants,
-#             e.end_date,
-#             e.event_time,
-#             COUNT(r.user_id) as current_participants
-#         FROM events e
-#         LEFT JOIN registrations r ON e.id = r.event_id
-#         WHERE e.id = ?
-#         GROUP BY e.id
-#     ''', (event_id,))
-#     result = cursor.fetchone()
-#     if result:
-#         return {
-#             'id': result[0],
-#             'max_participants': result[1],
-#             'end_date': result[2],
-#             'event_time': result[3],
-#             'current_participants': result[4]
-#         }
-#     return None
-
 async def handle_back_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -233,7 +204,6 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [f"{i + 1}. @{username}" for i, username in enumerate(participants)]
         ) if participants else "Нет участников"
 
-        # Клавиатура для пункта просмотра участников
         keyboard = [
             [InlineKeyboardButton("📨 Отправить сообщение", callback_data=f"sendmsg_{event_id}")],
             [InlineKeyboardButton("↩️ Назад", callback_data="adminevents")]
@@ -363,43 +333,66 @@ async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = update.message.text
     try:
         event_time = datetime.strptime(time_str, "%H:%M").time()
-        time_formatted = event_time.strftime("%H:%M")
+        context.user_data['event_time'] = time_str
 
-        # Получаем данные из контекста
-        max_p = context.user_data['event_max']
-        end_date = context.user_data['end_date'].strftime("%Y-%m-%d")
+        await update.message.reply_text("Введите описание мероприятия:")
+        return CREATE_INFO
+
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат времени! Используйте ЧЧ:ММ")
+        return CREATE_TIME
+
+
+async def create_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        info = update.message.text
+        context.user_data["info"] = info
+
+        # Проверяем наличие всех данных
+        if "event_max" not in context.user_data:
+            await update.message.reply_text("❌ Ошибка: не указано количество участников!")
+            return ConversationHandler.END
+
+        if "end_date" not in context.user_data:
+            await update.message.reply_text("❌ Ошибка: не указана дата мероприятия!")
+            return ConversationHandler.END
+
+        if "event_time" not in context.user_data:
+            await update.message.reply_text("❌ Ошибка: не указано время мероприятия!")
+            return ConversationHandler.END
+
+        # Извлекаем данные
+        max_p = context.user_data["event_max"]
+        end_date = context.user_data["end_date"].strftime("%Y-%m-%d")  # Конвертируем дату в строку
+        event_time = context.user_data["event_time"]
 
         # Добавляем мероприятие в БД
-        event_id = db.add_event(max_p, end_date, time_formatted)
+        event_id = db.add_event(max_p, end_date, event_time, info)  # Все 4 параметра!
 
-        # Рассчитываем время напоминания
+        # Планируем напоминание
         event_datetime = datetime.combine(
-            context.user_data['end_date'],
-            event_time
+            context.user_data["end_date"],  # Объект date
+            datetime.strptime(event_time, "%H:%M").time()
         )
         reminder_time = event_datetime - timedelta(hours=3)
 
-        # Планируем задачу без сохранения в bot_data
         if reminder_time > datetime.now():
             delta = (reminder_time - datetime.now()).total_seconds()
             context.job_queue.run_once(
                 send_reminder,
                 when=delta,
                 data=event_id,
-                name=f"reminder_{event_id}"  # Уникальное имя задачи
+                name=f"reminder_{event_id}"
             )
-            logger.info(f"⏰ Напоминание для мероприятия {event_id} запланировано")
 
         await update.message.reply_text("✅ Мероприятие успешно создано!")
         return ConversationHandler.END
 
-    except ValueError:
-        await update.message.reply_text("❌ Неверный формат времени! Используйте ЧЧ:ММ")
-        return CREATE_TIME
     except Exception as e:
-        logger.error(f"Ошибка: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Внутренняя ошибка")
+        logger.error(f"Ошибка в create_info: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Внутренняя ошибка при создании мероприятия.")
         return ConversationHandler.END
+
 
 async def create_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received end date: {update.message.text}")
@@ -435,8 +428,9 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
         for event in events:
-            event_id, max_p, end_date, event_time, current = event
-            text = f"{end_date} {event_time}({current}/{max_p})"
+            # Распаковываем 6 полей:
+            event_id, max_p, end_date, event_time, info, current = event  # Важно: 6 элементов!
+            text = f"{end_date} {event_time} ({current}/{max_p})\nОписание: {info[:20]}..."
             keyboard.append([
                 InlineKeyboardButton(text, callback_data=f"view_{event_id}"),
                 InlineKeyboardButton("✏️", callback_data=f"edit_{event_id}"),
@@ -448,7 +442,7 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Управление мероприятиями:", reply_markup=reply_markup)
 
     except Exception as e:
-        logger.error(f"Error in admin_events: {str(e)}", exc_info=True)
+        logger.error(f"Ошибка в admin_events: {str(e)}", exc_info=True)
         await message.reply_text("❌ Ошибка при загрузке панели управления")
 
 
@@ -492,7 +486,8 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
             [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")],
-            [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")]
+            [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")],
+            [InlineKeyboardButton("Описание", callback_data="field_info")]  # Новая кнопка
         ]
 
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -509,63 +504,93 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     try:
-        _, field = query.data.split('_', 1) # Разделение на две части
+        # Извлекаем название поля из callback_data (например, "field_info" -> "info")
+        _, field = query.data.split('_', 1)
+        context.user_data['edit_field'] = field
 
-        event_id = context.user_data['edit_event_id']
+        # Проверяем наличие event_id в контексте
+        event_id = context.user_data.get('edit_event_id')
+        if not event_id:
+            await query.edit_message_text("❌ Мероприятие не выбрано!")
+            return ConversationHandler.END
+
+        # Получаем данные мероприятия
         event = db.get_event_by_id(event_id)
-
         if not event:
             await query.edit_message_text("❌ Мероприятие не найдено!")
             return ConversationHandler.END
 
-        context.user_data['edit_field'] = field
-
-        # Обновляем данные поля
+        # Формируем сообщение с текущим значением поля
         field_data = {
             'max_participants': ('максимальное количество участников', event['max_participants']),
             'end_date': ('дату окончания', event['end_date']),
-            'event_time': ('время мероприятия', event['event_time'])
+            'event_time': ('время мероприятия', event['event_time']),
+            'info': ('описание', event['info'])
         }
 
+        # Проверяем корректность поля
+        if field not in field_data:
+            await query.edit_message_text("❌ Некорректное поле для редактирования!")
+            return ConversationHandler.END
+
+        # Формируем текст сообщения
         field_name, current_value = field_data[field]
+        message_text = (
+            f"Текущее {field_name}:\n"
+            f"`{current_value}`\n\n"
+            f"Введите новое значение:"
+        )
+
         await query.edit_message_text(
-            f"Текущее {field_name}: {current_value}\nВведите новое значение:"
+            message_text,
+            parse_mode="MarkdownV2"  # Для корректного отображения `
         )
         return EDIT_VALUE
 
     except ValueError as e:
-        logger.error(f"Error splitting callback_data: {str(e)}")
-        await query.edit_message_text("❌ Ошибка в обработке запроса")
+        logger.error(f"Ошибка разбора callback_data: {query.data} -> {str(e)}")
+        await query.edit_message_text("❌ Ошибка обработки запроса")
         return ConversationHandler.END
-    except KeyError as e:
-        logger.error(f"Invalid field: {str(e)}")
-        await query.edit_message_text("❌ Некорректное поле для редактирования")
-        return ConversationHandler.END
+
     except Exception as e:
-        logger.error(f"Error in edit_choice: {str(e)}", exc_info=True)
-        await query.edit_message_text("❌ Произошла внутренняя ошибка")
+        logger.error(f"Ошибка в edit_choice: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Внутренняя ошибка")
         return ConversationHandler.END
 
 async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_data = context.user_data
-        field = user_data['edit_field']
-        value = update.message.text
-        event_id = user_data['edit_event_id']
-        event = db.get_event_by_id(event_id)
+        field = user_data.get("edit_field")
+        value = update.message.text.strip()
+        event_id = user_data.get("edit_event_id")
 
-        # Обработка времени
-        if field == 'event_time':
+        if not all([field, event_id]):
+            await update.message.reply_text("❌ Сессия редактирования устарела!")
+            return ConversationHandler.END
+
+        # Получаем актуальные данные мероприятия
+        event = db.get_event_by_id(event_id)
+        if not event:
+            await update.message.reply_text("❌ Мероприятие не найдено!")
+            return ConversationHandler.END
+
+        # Обработка разных полей
+        if field == "max_participants":
             try:
-                datetime.strptime(value, "%H:%M")
-                db.update_event_field(event_id, 'event_time', value)
-                await update.message.reply_text("✅ Время мероприятия обновлено!")
+                new_max = int(value)
+                if new_max < event["current_participants"]:
+                    await update.message.reply_text(
+                        f"⚠️ Нельзя установить меньше {event['current_participants']} (уже зарегистрированные участники)!"
+                    )
+                    return EDIT_VALUE
+                db.update_event_field(event_id, field, new_max)
+                await update.message.reply_text("✅ Лимит участников обновлен!")
+
             except ValueError:
-                await update.message.reply_text("❌ Неверный формат времени! Используйте ЧЧ:ММ")
+                await update.message.reply_text("❌ Введите целое число!")
                 return EDIT_VALUE
 
-        # Обработка даты
-        elif field == 'end_date':
+        elif field == "end_date":
             try:
                 parsed_date = datetime.strptime(value, "%Y-%m-%d").date()
                 if parsed_date < datetime.now().date():
@@ -573,36 +598,43 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return EDIT_VALUE
                 db.update_event_field(event_id, field, value)
                 await update.message.reply_text("✅ Дата обновлена!")
+
             except ValueError:
-                await update.message.reply_text("❌ Неверный формат даты! Используйте ГГГГ-ММ-ДД")
+                await update.message.reply_text("❌ Формат: ГГГГ-ММ-ДД")
                 return EDIT_VALUE
 
-        # Обработка максимального количества участников
-        elif field == 'max_participants':
+        elif field == "event_time":
             try:
-                new_max = int(value)
-                if new_max < event['current_participants']:
-                    await update.message.reply_text(f"❌ Нельзя установить меньше {event['current_participants']}!")
-                    return EDIT_VALUE
-                db.update_event_field(event_id, field, new_max)
-                await update.message.reply_text("✅ Максимальное количество участников обновлено!")
+                datetime.strptime(value, "%H:%M")  # Валидация формата
+                db.update_event_field(event_id, field, value)
+                await update.message.reply_text("✅ Время обновлено!")
+
             except ValueError:
-                await update.message.reply_text("❌ Введите целое число!")
+                await update.message.reply_text("❌ Формат: ЧЧ:ММ")
                 return EDIT_VALUE
 
-        job_name = f"reminder_{event_id}"
-        for job in context.job_queue.jobs():
-            if job.name == job_name:
-                job.schedule_removal()
-                logger.info(f"🗑️ Удалена задача {job_name}")
+        elif field == "info":
+            if len(value) > 500:
+                await update.message.reply_text("❌ Описание слишком длинное (макс. 500 символов)")
+                return EDIT_VALUE
+            db.update_event_field(event_id, "info", value)
+            await update.message.reply_text("✅ Описание обновлено!")
 
-        if field in ['end_date', 'event_time']:
-            event = db.get_event_by_id(event_id)
-            end_date = datetime.strptime(event['end_date'], "%Y-%m-%d").date()
-            event_time = datetime.strptime(event['event_time'], "%H:%M").time()
+        # Обновляем напоминание если нужно
+        if field in ("end_date", "event_time"):
+            event = db.get_event_by_id(event_id)  # Получаем новые данные
+            end_date = datetime.strptime(event["end_date"], "%Y-%m-%d").date()
+            event_time = datetime.strptime(event["event_time"], "%H:%M").time()
             event_datetime = datetime.combine(end_date, event_time)
             reminder_time = event_datetime - timedelta(hours=3)
 
+            # Удаляем старую задачу
+            job_name = f"reminder_{event_id}"
+            for job in context.job_queue.jobs():
+                if job.name == job_name:
+                    job.schedule_removal()
+
+            # Создаем новую задачу если время актуально
             if reminder_time > datetime.now():
                 delta = (reminder_time - datetime.now()).total_seconds()
                 context.job_queue.run_once(
@@ -611,15 +643,16 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data=event_id,
                     name=job_name
                 )
-                logger.info(f"🔄 Задача {job_name} пересоздана")
+                logger.info(f"🔄 Напоминание для {event_id} перепланировано")
 
+        # Возвращаем в админ-панель
+        await admin_events(update, context)
         return ConversationHandler.END
 
     except Exception as e:
-        logger.error(f"Ошибка: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Ошибка обновления")
+        logger.error(f"Ошибка в edit_value: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Критическая ошибка при обновлении")
         return ConversationHandler.END
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -799,24 +832,10 @@ def main():
             CallbackQueryHandler(create_event, pattern="^createevent$")
         ],
         states={
-            CREATE_MAX: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    create_max
-                )
-            ],
-            CREATE_END: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    create_end
-                )
-            ],
-            CREATE_TIME: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    create_time
-                )
-            ]
+            CREATE_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_max)],
+            CREATE_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_end)],
+            CREATE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_time)],
+            CREATE_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_info)]  # Добавлено
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         persistent=True,
@@ -826,20 +845,23 @@ def main():
 
     edit_event_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(edit_event_start, pattern=r"^edit_\d+$")  # Только edit_ с цифрами
+            CallbackQueryHandler(edit_event_start, pattern=r"^edit_\d+$")  # Обработка кнопки "✏️"
         ],
         states={
             EDIT_CHOICE: [
-                CallbackQueryHandler(edit_choice, pattern=r"^field_(name|max_participants|end_date|event_time)$")
+                CallbackQueryHandler(edit_choice, pattern=r"^field_(max_participants|end_date|event_time|info)$")
             ],
             EDIT_VALUE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_value)
             ]
         },
         fallbacks=[
-            CommandHandler('cancel', cancel),
+            CommandHandler("cancel", cancel_edit),
             CallbackQueryHandler(cancel_edit, pattern="^cancel_edit$")
         ],
+        map_to_parent={  # Важно: возврат в родительский ConversationHandler
+            ConversationHandler.END: ConversationHandler.END
+        },
         persistent=True,
         name="edit_event_conv"
     )

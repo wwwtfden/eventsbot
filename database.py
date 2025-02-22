@@ -1,10 +1,19 @@
 import sqlite3
+import logging
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.DEBUG # .INFO после исправления багов
+)
+
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, DATABASE_NAME):
         self.conn = sqlite3.connect(DATABASE_NAME)
         self.create_tables()
 
+    # database.py → метод create_tables()
     def create_tables(self):
         cursor = self.conn.cursor()
         cursor.execute('''
@@ -13,13 +22,15 @@ class Database:
                 max_participants INTEGER NOT NULL,
                 end_date DATE NOT NULL,
                 event_time TIME NOT NULL,
+                info TEXT NOT NULL,  -- Исправлено: заменен # на --
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
         # Проверка существования столбцов
         cursor.execute("PRAGMA table_info(events)")
         columns = [column[1] for column in cursor.fetchall()]
-        required_columns = {'max_participants', 'end_date', 'event_time'}
+        required_columns = {'max_participants', 'end_date', 'event_time', 'info'}  # Обновлено
 
         if not required_columns.issubset(columns):
             cursor.execute('DROP TABLE IF EXISTS events')
@@ -37,14 +48,19 @@ class Database:
         ''')
         self.conn.commit()
 
-    def add_event(self, max_participants, end_date, event_time):
+    def add_event(self, max_participants, end_date, event_time, info):
         cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT INTO events (max_participants, end_date, event_time)
-            VALUES (?, ?, ?)
-        ''', (max_participants, end_date, event_time))
-        self.conn.commit()
-        return cursor.lastrowid
+        try:
+            cursor.execute('''
+                INSERT INTO events 
+                (max_participants, end_date, event_time, info)
+                VALUES (?, ?, ?, ?)
+            ''', (max_participants, end_date, event_time, info))
+            self.conn.commit()
+            return cursor.lastrowid
+        except sqlite3.Error as e:
+            logger.error(f"Ошибка добавления мероприятия: {str(e)}")
+            raise
 
     def delete_event(self, event_id):
         cursor = self.conn.cursor()
@@ -60,6 +76,7 @@ class Database:
                 e.max_participants,
                 e.end_date,
                 e.event_time,
+                e.info,  -- Добавлено
                 COUNT(r.user_id) as current_participants
             FROM events e
             LEFT JOIN registrations r ON e.id = r.event_id
@@ -126,9 +143,15 @@ class Database:
         return cursor.rowcount
 
     def update_event_field(self, event_id, field, value):
+        allowed_fields = {'max_participants', 'end_date', 'event_time', 'info'}
+        if field not in allowed_fields:
+            raise ValueError(f"Недопустимое поле: {field}")
+
         cursor = self.conn.cursor()
         cursor.execute(f'''
-            UPDATE events SET {field} = ? WHERE id = ?
+            UPDATE events 
+            SET {field} = ? 
+            WHERE id = ?
         ''', (value, event_id))
         self.conn.commit()
 
@@ -140,6 +163,7 @@ class Database:
                 e.max_participants,
                 e.end_date,
                 e.event_time,
+                e.info,  -- Исправлено
                 COUNT(r.user_id) as current_participants
             FROM events e
             LEFT JOIN registrations r ON e.id = r.event_id
@@ -153,6 +177,7 @@ class Database:
                 'max_participants': result[1],
                 'end_date': result[2],
                 'event_time': result[3],
-                'current_participants': result[4]
+                'info': result[4],  # Добавлено поле
+                'current_participants': result[5]
             }
         return None
