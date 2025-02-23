@@ -1,5 +1,6 @@
 import database
 import logging
+from logging.handlers import RotatingFileHandler
 import configparser
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -18,7 +19,16 @@ from datetime import datetime, timedelta, time
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG # .INFO после исправления багов
+    level=logging.DEBUG,  # Уровень логирования
+    handlers=[
+        RotatingFileHandler(
+            "bot.log",
+            maxBytes=5*1024*1024,  # 5 MB
+            backupCount=3,
+            encoding="utf-8"
+        ),
+        logging.StreamHandler()  # Для вывода в консоль
+    ]
 )
 
 logger = logging.getLogger(__name__)
@@ -297,11 +307,14 @@ async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYP
 
     event_id = context.user_data.get('sendlink_event_id')
     participants = db.get_event_participant_ids(event_id)
+
+    participants = [uid for uid in participants if uid not in ADMIN_IDS]
+
     message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
         link=context.user_data.get('link', '')
     )
 
-    success = 0
+    success, failed = 0, 0
     for user_id in participants:
         try:
             await context.bot.send_message(
@@ -312,8 +325,12 @@ async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYP
             success += 1
         except Exception as e:
             logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
+            failed += 1
 
-    await query.edit_message_text(f"✅ Сообщение отправлено {success} участникам!")
+    await query.edit_message_text(
+        f"✅ Сообщение отправлено {success} участникам.\n"
+        f"❌ Не удалось отправить: {failed}"
+    )
     return ConversationHandler.END
 
 
@@ -573,7 +590,10 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Добавляем кнопки в один ряд
             keyboard.append([
-                InlineKeyboardButton(event_text, callback_data=f"view_{event_id}"),
+                InlineKeyboardButton(
+                    event_text,
+                    callback_data=f"view_{event_id}"  # <- Вот это важно
+                ),
                 InlineKeyboardButton("✏️", callback_data=f"edit_{event_id}"),
                 InlineKeyboardButton("❌", callback_data=f"delete_{event_id}")
             ])
@@ -1110,6 +1130,9 @@ def main():
     # application.add_handler(CallbackQueryHandler(admin_actions, pattern=r"^view_\d+$"))
     application.add_handler(
         CallbackQueryHandler(admin_actions, pattern=r"^delete_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(admin_actions, pattern=r"^view_\d+$")
     )
     application.add_handler(CallbackQueryHandler(send_message_to_participants, pattern=r"^sendmsg_\d+$"))
     application.add_handler(CallbackQueryHandler(menu_handler))
