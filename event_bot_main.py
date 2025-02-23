@@ -250,8 +250,6 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("delete_"):
         event_id = int(query.data.split("_")[1])
         context.user_data['delete_event_id'] = event_id
-
-        # Запрос подтверждения
         keyboard = [
             [InlineKeyboardButton("✅ Да", callback_data="confirm_delete")],
             [InlineKeyboardButton("❌ Нет", callback_data="cancel_delete")]
@@ -350,10 +348,8 @@ async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     event_id = context.user_data.get('sendmsg_event_id')
     participant_ids = db.get_event_participant_ids(event_id)
 
-    # Исключаем администратора
     participant_ids = [uid for uid in participant_ids if uid not in ADMIN_IDS]
 
-    # Отправка сообщений
     success, failed = 0, 0
     for user_id in participant_ids:
         try:
@@ -378,14 +374,12 @@ async def remove_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     event_id = int(query.data.split("_")[1])
     context.user_data["current_event_id"] = event_id
 
-    # Получаем список участников
     participants = db.get_event_participants(event_id)
 
     if not participants:
         await query.edit_message_text("❌ В этом мероприятии нет участников")
         return ConversationHandler.END
 
-    # Создаем кнопки с участниками
     keyboard = [
         [InlineKeyboardButton(f"@{username}", callback_data=f"remove_{username}")]
         for username in participants
@@ -404,7 +398,6 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     username = query.data.split("_")[1]
     event_id = context.user_data["current_event_id"]
 
-    # Получаем user_id по username
     user_id = db.get_user_id_by_username(username)
 
     if user_id:
@@ -417,23 +410,26 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        query = update.callback_query
-        event_id = context.user_data.get('delete_event_id')
+    query = update.callback_query
+    await query.answer()
 
-        # Удаляем все задачи мероприятия
-        job_name = f"reminder_{event_id}"
-        for job in context.job_queue.jobs():
-            if job.name == job_name:
-                job.schedule_removal()
+    event_id = context.user_data.get('delete_event_id')
+    if not event_id:
+        await query.edit_message_text("❌ Мероприятие не найдено")
+        return
 
-        # Удаляем из БД
-        db.delete_event(event_id)
-        await query.edit_message_text("✅ Мероприятие удалено!")
+    # Удаляем мероприятие и связанные записи
+    db.delete_event(event_id)
 
-    except Exception as e:
-        logger.error(f"Ошибка: {str(e)}", exc_info=True)
-        await query.edit_message_text("❌ Ошибка удаления")
+    # Удаляем запланированные напоминания
+    job_name = f"reminder_{event_id}"
+    for job in context.job_queue.jobs():
+        if job.name == job_name:
+            job.schedule_removal()
+
+    await query.edit_message_text("✅ Мероприятие удалено!")
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1053,11 +1049,9 @@ def main():
             ]
         },
         fallbacks=[],
-        map_to_parent={
-            ConversationHandler.END: ConversationHandler.END
-        },
-        persistent=True,  # Требует указания имени
-        name="delete_event_conv"  # Уникальное имя для обработчика
+        map_to_parent={ConversationHandler.END: ConversationHandler.END},
+        name="delete_event_conv",
+        persistent=True
     )
     application.add_handler(delete_event_conv)
 
@@ -1113,7 +1107,10 @@ def main():
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
     application.add_handler(CallbackQueryHandler(edit_event_start, pattern="^edit_"))
     application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^unreg_"))
-    application.add_handler(CallbackQueryHandler(admin_actions, pattern=r"^view_\d+$"))
+    # application.add_handler(CallbackQueryHandler(admin_actions, pattern=r"^view_\d+$"))
+    application.add_handler(
+        CallbackQueryHandler(admin_actions, pattern=r"^delete_\d+$")
+    )
     application.add_handler(CallbackQueryHandler(send_message_to_participants, pattern=r"^sendmsg_\d+$"))
     application.add_handler(CallbackQueryHandler(menu_handler))
     application.add_handler(CallbackQueryHandler(handle_back_button, pattern="^adminevents$"))
