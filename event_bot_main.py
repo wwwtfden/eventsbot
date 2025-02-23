@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, time
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG,  # Уровень логирования
+    level=logging.INFO,  # Уровень логирования
     handlers=[
         RotatingFileHandler(
             "bot.log",

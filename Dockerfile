@@ -1,5 +1,5 @@
 # Используем официальный образ Python
-FROM python:3.12-slim
+FROM python:3.12
 
 # Устанавливаем зависимости для SQLite (если нужно)
 RUN apt-get update && apt-get install -y sqlite3
