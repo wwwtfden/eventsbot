@@ -1,3 +1,4 @@
+import os
 import database
 import logging
 from logging.handlers import RotatingFileHandler
@@ -48,6 +49,11 @@ except (configparser.NoOptionError, configparser.NoSectionError):
     ADMIN_IDS = []
 
 DATABASE_NAME = config['Main']['DATABASE_NAME']
+
+try:
+    os.remove(os.path.join(os.path.dirname(__file__), "conversationbot"))
+except FileNotFoundError:
+    pass
 
 persistence = PicklePersistence(filepath="conversationbot")
 
@@ -132,8 +138,10 @@ async def check_admin_access(update: Update) -> bool:
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Создание мероприятия отменено.")
+    user = update.effective_user
+    logger.info(f"User {user.id} canceled the conversation. Clearing user_data: {context.user_data}")
     context.user_data.clear()
+    await update.message.reply_text("❌ Действие отменено.")
     return ConversationHandler.END
 
 
@@ -429,42 +437,55 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
+    
     event_id = context.user_data.get('delete_event_id')
     if not event_id:
-        await query.edit_message_text("❌ Мероприятие не найдено")
+        await query.edit_message_text("❌ Мероприятие не найдено.")
         return
 
-    # Удаляем мероприятие и связанные записи
-    db.delete_event(event_id)
+    try:
+        db.delete_event(event_id)
+        
+        # Удаление всех связанных jobs
+        job_name = f"reminder_{event_id}"
+        for job in context.job_queue.jobs():
+            if job.name == job_name:
+                job.schedule_removal()
+        
+        logger.info(f"Мероприятие {event_id} удалено. Jobs очищены.")
+        await query.edit_message_text("✅ Мероприятие удалено!")
 
-    # Удаляем запланированные напоминания
-    job_name = f"reminder_{event_id}"
-    for job in context.job_queue.jobs():
-        if job.name == job_name:
-            job.schedule_removal()
+    except Exception as e:
+        logger.error(f"Ошибка удаления мероприятия {event_id}: {str(e)}")
+        await query.edit_message_text("❌ Не удалось удалить мероприятие.")
 
-    await query.edit_message_text("✅ Мероприятие удалено!")
-    context.user_data.clear()
-    return ConversationHandler.END
+    finally:
+        context.user_data.clear()  # Обязательная очистка
+        return ConversationHandler.END
 
 
 async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Проверка прав администратора
     if not await check_admin_access(update):
         return ConversationHandler.END
 
     context.user_data.clear()
-
-    query = update.callback_query
-    if query:
-        await query.answer()
-        message = query.message
-    else:
-        message = update.message
-
-    await message.reply_text("Введите количество участников:")
-    return CREATE_MAX
+    
+    try:
+        query = update.callback_query
+        if query:
+            await query.answer()
+            message = query.message
+        else:
+            message = update.message
+        
+        await message.reply_text("Введите количество участников:")
+        return CREATE_MAX
+        
+    except Exception as e:
+        logger.error(f"Ошибка в create_event: {str(e)}")
+        await message.reply_text("❌ Ошибка инициализации.")
+        context.user_data.clear()
+        return ConversationHandler.END
 
 
 async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -569,7 +590,11 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_admin_access(update):
             return
 
+        # Очистка устаревших состояний
+        context.user_data.clear()
+        
         events = db.get_all_events()
+
         if not events:
             message = update.message or update.callback_query.message
             await message.reply_text("Нет мероприятий для управления.")
@@ -603,8 +628,9 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("Управление мероприятиями:", reply_markup=reply_markup)
 
     except Exception as e:
-        logger.error(f"Error in admin_events: {str(e)}", exc_info=True)
-        await message.reply_text("❌ Ошибка при загрузке панели управления")
+        logger.error(f"Ошибка в admin_events (User {update.effective_user.id}): {str(e)}")
+        await update.message.reply_text("❌ Ошибка загрузки меню.")
+        context.user_data.clear()
 
 
 async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -669,27 +695,31 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
+    
+    # Очистка предыдущих данных
+    context.user_data.clear()
+    
     try:
         event_id = int(query.data.split("_")[1])
         context.user_data['edit_event_id'] = event_id
-
-        # клавиатура берется отсюда
+        
         keyboard = [
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
             [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")],
             [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")],
-            [InlineKeyboardButton("Описание", callback_data="field_info")]  # Новая кнопка
+            [InlineKeyboardButton("Описание", callback_data="field_info")]
         ]
-
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("Выберите поле для редактирования:", reply_markup=reply_markup)
         return EDIT_CHOICE
-
+        
     except Exception as e:
-        logger.error(f"Error in edit_event_start: {str(e)}", exc_info=True)
-        await query.edit_message_text("❌ Произошла ошибка")
+        logger.error(f"Ошибка в edit_event_start: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Не удалось начать редактирование.")
+        context.user_data.clear()
         return ConversationHandler.END
+    
 
 async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -751,9 +781,12 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         field = user_data.get("edit_field")
         value = update.message.text.strip()
         event_id = user_data.get("edit_event_id")
+        user_id = update.effective_user.id
 
         if not all([field, event_id]):
-            await update.message.reply_text("❌ Сессия редактирования устарела!")
+            logger.error(f"User {user_id}: Пропущены ключевые данные в user_data!")
+            await update.message.reply_text("❌ Сессия устарела. Начните заново.")
+            context.user_data.clear()
             return ConversationHandler.END
 
         # Получаем актуальные данные мероприятия
@@ -838,9 +871,15 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     except Exception as e:
-        logger.error(f"Ошибка в edit_value: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Критическая ошибка при обновлении")
+        logger.error(f"Ошибка в edit_value (User {update.effective_user.id}): {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Критическая ошибка. Состояние сброшено.")
+        context.user_data.clear()
         return ConversationHandler.END
+
+    finally:
+        # Всегда вызываем admin_events для возврата в меню
+        await admin_events(update, context)
+        context.user_data.clear()  # Дополнительная очистка
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -999,6 +1038,10 @@ def main():
         .persistence(persistence)
         .build()
     )
+
+    # application.persistence.drop_user_data()
+    # application.persistence.drop_chat_data()
+    logger.info("Состояния пользователей сброшены при запуске.")
 
     application.job_queue.run_once(
         callback=restore_reminders,

@@ -133,11 +133,12 @@ class Database:
                     e.id, 
                     e.end_date, 
                     e.event_time,
-                    COALESCE(e.info, 'Без описания')  -- Заменяем NULL
+                    COALESCE(e.info, 'Без описания')
                 FROM events e
                 JOIN registrations r ON e.id = r.event_id
                 WHERE r.user_id = ?
-            ''', (user_id,))
+                    AND datetime(e.end_date || ' ' || e.event_time) > datetime('now', '-6 hours')
+            ''', (user_id,))  # Добавлено условие
             return cursor.fetchall()
         except Exception as e:
             logger.error(f"Ошибка БД: {str(e)}")
