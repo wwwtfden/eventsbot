@@ -958,9 +958,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_photo(
             chat_id=chat_id,
             photo=photo_file,
-            caption=photo_text,
+            # caption=photo_text,
             parse_mode='MarkdownV2'
         )
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=photo_text
+    )
 
     message = update.message or update.callback_query.message
     await message.reply_text(text, reply_markup=reply_markup)
@@ -980,6 +985,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Главное меню",
         "/events - Показать все мероприятия",
         "/myevents - Показать мои записи"
+        "/menu - Зайти в меню"
     ]
 
     if is_admin(user.id):
@@ -989,7 +995,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/createevent - Создать новое мероприятие"
         ])
 
-    menu_text.append("\nℹ️ Выберите действие из меню или используйте команды!")
+    menu_text.append("\nℹ️ Выбери действие из меню или используй команды!")
 
     reply_markup = build_main_menu_keyboard(is_admin(user.id))
     await message.reply_text("\n".join(menu_text), reply_markup=reply_markup)
