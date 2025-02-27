@@ -40,6 +40,7 @@ config = configparser.ConfigParser()
 config.read('bot_config.ini', encoding='utf-8')
 
 TOKEN = config['Main']['TOKEN']
+admin_url = config['Main']['HELP_ACCOUNT']
 
 try:
     ADMIN_IDS = [
@@ -62,7 +63,8 @@ persistence = PicklePersistence(filepath="conversationbot")
 USER_COMMANDS = [
     ("📆 Выбрать сессию", "events"),
     ("🧑‍💻 Мои записи", "myevents"),
-    ("ℹ️ Меню", "menu")
+    ("ℹ️ Меню", "menu"),
+    ("🆘 Помощь", "help") 
 ]
 
 ADMIN_COMMANDS = USER_COMMANDS + [
@@ -172,6 +174,33 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("✖️ Редактирование отменено")
     context.user_data.clear()
     return ConversationHandler.END
+
+
+@error_logger
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global admin_url
+    keyboard = [
+        [InlineKeyboardButton(
+            "✉️ Связаться с администратором", 
+            url=admin_url
+        )]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message_text = (
+        "Для получения помощи нажмите кнопку ниже, "
+        "чтобы написать администратору напрямую:"
+    )
+    
+    await (update.message or update.callback_query.message).reply_text(
+        message_text,
+        reply_markup=reply_markup
+    )
+#     help_text = (
+#         "Для получения помощи свяжитесь с администратором: @admin1111\n"
+#         "Мы всегда готовы ответить на ваши вопросы!"
+#     )
+#     await (update.message or update.callback_query.message).reply_text(help_text)
 
 
 @error_logger
@@ -916,7 +945,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"🔄 Напоминание для {event_id} перепланировано")
 
         # Обратно в админ-панель
-        await admin_events(update, context)
+        # await admin_events(update, context)
         return ConversationHandler.END
 
     except Exception as e:
@@ -985,7 +1014,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Главное меню",
         "/events - Показать все мероприятия",
         "/myevents - Показать мои записи",
-        "/menu - Зайти в меню"
+        "/menu - Зайти в меню",
+        "/help - Нужна помощь!"
     ]
 
     if is_admin(user.id):
@@ -1018,6 +1048,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_events(update, context)
         elif command == "myevents":
             await my_events(update, context)
+        elif command == "help":
+            await help_command(update, context)
+            return
         elif command == "adminevents":
             if user_id in ADMIN_IDS:
                 await admin_events(update, context)
@@ -1117,6 +1150,7 @@ def main():
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("events", show_events))
     application.add_handler(CommandHandler("myevents", my_events))
+    application.add_handler(CommandHandler("help", help_command))
 
     # Административные обработчики
     application.add_handler(CommandHandler("adminevents", admin_events))
