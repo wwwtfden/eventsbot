@@ -752,7 +752,7 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = [
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
-            [InlineKeyboardButton("Дата окончания", callback_data="field_end_date")],
+            [InlineKeyboardButton("Дата мероприятия", callback_data="field_end_date")],
             [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")],
             [InlineKeyboardButton("Описание", callback_data="field_info")]
         ]
@@ -790,7 +790,7 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         field_data = {
             'max_participants': ('максимальное количество участников', event['max_participants']),
-            'end_date': ('дату окончания', event['end_date']),
+            'end_date': ('дату мероприятия', event['end_date']),
             'event_time': ('время мероприятия', event['event_time']),
             'info': ('описание', event['info'])
         }
