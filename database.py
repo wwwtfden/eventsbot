@@ -1,10 +1,10 @@
 import sqlite3
 import logging
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO # .INFO после исправления багов
-)
+# logging.basicConfig(
+#     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+#     level=logging.INFO # .INFO после исправления багов
+# )
 
 logger = logging.getLogger(__name__)
 

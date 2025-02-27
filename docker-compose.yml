@@ -7,7 +7,12 @@ services:
     volumes:
       - ./database:/app/database
       - ./bot_config.ini:/app/bot_config.ini
+      - ./logs:/app/logs
     environment:
       - TZ=Europe/Moscow
     ports:
       - "8443:8443"
+
+volumes:
+  logs:
+    driver: local

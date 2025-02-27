@@ -17,15 +17,17 @@ from telegram.ext import (
 import sqlite3
 from datetime import datetime, timedelta, time
 
+import improvedLogger as ilg
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,  # Уровень логирования
     handlers=[
-        RotatingFileHandler(
+        ilg.TimestampedRotatingFileHandler(
             "bot.log",
             maxBytes=5*1024*1024,  # 5 MB
-            backupCount=3,
-            encoding="utf-8"
+            backupCount=20,
+            # encoding="utf-8"
         ),
         logging.StreamHandler()  # Для вывода в консоль
     ]
@@ -73,7 +75,7 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-    #return user_id == ADMIN_ID
+
 
 global db
 db = None
