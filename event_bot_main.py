@@ -86,8 +86,19 @@ def build_main_menu_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+def error_logger(func):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            return await func(update, context)
+        except Exception as e:
+            logger.error(f"Error in {func.__name__}: {str(e)}", exc_info=True)
+            await error_handler(update, context)
+    return wrapper
+
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
 
 global db
 db = None
@@ -145,6 +156,7 @@ async def check_admin_access(update: Update) -> bool:
     return True
 
 
+@error_logger
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     logger.info(f"User {user.id} canceled the conversation. Clearing user_data: {context.user_data}")
@@ -153,6 +165,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+@error_logger
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -161,6 +174,7 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+@error_logger
 async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         events = db.get_all_events()
@@ -199,6 +213,7 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Произошла ошибка при загрузке мероприятий")
 
 
+@error_logger
 async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -230,6 +245,7 @@ async def handle_back_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await admin_events(update, context)
 
 
+@error_logger
 async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -296,6 +312,7 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Неизвестное действие")
 
 
+@error_logger
 async def send_message_to_participants(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -324,6 +341,7 @@ async def send_link_to_participants(update: Update, context: ContextTypes.DEFAUL
     return WAITING_FOR_LINK
 
 
+@error_logger
 async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -357,6 +375,7 @@ async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 
+@error_logger
 async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = update.message.text
     context.user_data['link'] = link
@@ -383,6 +402,7 @@ async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return CONFIRM_LINK
 
 
+@error_logger
 async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     event_id = context.user_data.get('sendmsg_event_id')
@@ -407,6 +427,7 @@ async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 
+@error_logger
 async def remove_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -431,6 +452,7 @@ async def remove_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return REMOVE_USER_SELECT
 
 
+@error_logger
 async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -449,6 +471,7 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
+@error_logger
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -479,6 +502,7 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 
+@error_logger
 async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin_access(update):
         return ConversationHandler.END
@@ -503,6 +527,7 @@ async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 
+@error_logger
 async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         max_p = int(update.message.text)
@@ -518,6 +543,7 @@ async def create_max(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CREATE_MAX
 
 
+@error_logger
 async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     time_str = update.message.text
     try:
@@ -532,6 +558,7 @@ async def create_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CREATE_TIME
 
 
+@error_logger
 async def create_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         info = update.message.text
@@ -582,6 +609,7 @@ async def create_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 
+@error_logger
 async def create_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received end date: {update.message.text}")
     try:
@@ -600,6 +628,7 @@ async def create_end(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CREATE_END
 
 
+@error_logger
 async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not await check_admin_access(update):
@@ -648,6 +677,7 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
 
+@error_logger
 async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
@@ -697,6 +727,7 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("⚠️ Произошла внутренняя ошибка")
 
 
+@error_logger
 async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -707,6 +738,7 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.edit_message_text("Регистрация отменена!")
 
 
+@error_logger
 async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -736,6 +768,7 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     
 
+@error_logger
 async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -790,6 +823,7 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 
+@error_logger
 async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_data = context.user_data
@@ -897,6 +931,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()  # Дополнительная очистка
 
 
+@error_logger
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     is_admin_user = is_admin(user.id)
@@ -925,6 +960,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(text, reply_markup=reply_markup)
 
 
+@error_logger
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         message = update.callback_query.message
@@ -953,6 +989,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text("\n".join(menu_text), reply_markup=reply_markup)
 
 
+@error_logger
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -990,6 +1027,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Произошла ошибка при обработке запроса")
 
 
+@error_logger
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.message:
@@ -1000,6 +1038,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in error handler: {str(e)}")
 
 
+@error_logger
 async def cancel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
