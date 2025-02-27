@@ -56,7 +56,7 @@ persistence = PicklePersistence(filepath="conversationbot")
 USER_COMMANDS = [
     ("📆 Выбрать сессию", "events"),
     ("🧑‍💻 Мои записи", "myevents"),
-    ("🩹 Нужна помощь", "help")
+    ("📋 Меню", "menu")
 ]
 
 ADMIN_COMMANDS = USER_COMMANDS + [
@@ -879,7 +879,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(text, reply_markup=reply_markup)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         message = update.callback_query.message
         user = update.callback_query.from_user
@@ -887,7 +887,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message
         user = update.effective_user
 
-    help_text = [
+    menu_text = [
         "📋 Доступные команды:",
         "/start - Главное меню",
         "/events - Показать все мероприятия",
@@ -895,13 +895,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     if is_admin(user.id):
-        help_text.extend([
+        menu_text.extend([
             "\n⚙️ Админ-команды:",
             "/adminevents - Управление мероприятиями",
             "/createevent - Создать новое мероприятие"
         ])
 
-    help_text.append("\nℹ️ Выберите действие из меню или используйте команды!")
+    menu_text.append("\nℹ️ Выбери действие из меню или используй команды!")
 
     # Создаем клавиатуру в зависимости от прав
     keyboard = []
@@ -915,7 +915,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append(buttons[i:i + 2])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await message.reply_text("\n".join(help_text), reply_markup=reply_markup)
+    await message.reply_text("\n".join(menu_text), reply_markup=reply_markup)
 
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -928,8 +928,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         command = query.data
         user_id = query.from_user.id
 
-        if command == "help":
-            await help_command(update, context)
+        if command == "menu":
+            await menu_command(update, context)
         elif command == "events":
             await show_events(update, context)
         elif command == "myevents":
@@ -1024,7 +1024,7 @@ def main():
 
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("events", show_events))
     application.add_handler(CommandHandler("myevents", my_events))
 
