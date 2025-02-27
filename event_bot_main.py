@@ -958,7 +958,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_photo(
             chat_id=chat_id,
             photo=photo_file,
-            caption=photo_text
+            caption=photo_text,
             parse_mode='MarkdownV2'
         )
 
