@@ -202,7 +202,7 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if success:
                 await query.edit_message_text(
-                    f"✅ Вы успешно записаны на мероприятие! Осталось мест: {available - 1}"
+                    f"✅ Вы успешно записаны на мероприятие!" # Осталось мест: {available - 1}
                 )
             else:
                 await query.edit_message_text("⚠️ Вы уже записаны на это мероприятие!")
@@ -589,8 +589,13 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             event_id, max_p, end_date, event_time, info, current = event
             available = max_p - current
 
-            # Форматируем дату в DD.MM
-            day_month = end_date.split("-")[2] + "." + end_date.split("-")[1]
+            # Форматируем дату в DD.MM (убрать try-except если будут проблемы тут)
+            try:
+                day_month = end_date.split("-")[2] + "." + end_date.split("-")[1]
+            except ValueError:
+                logger.error(f"Неверный формат даты: {end_date}")
+                context.user_data.clear()
+                return ConversationHandler.END
 
             # Формируем текст основной кнопки
             event_text = f"{day_month} {event_time}"
@@ -760,10 +765,14 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         field = user_data.get("edit_field")
         value = update.message.text.strip()
         event_id = user_data.get("edit_event_id")
+        user_id = update.effective_user.id
 
         if not all([field, event_id]):
             await update.message.reply_text("❌ Сессия редактирования устарела!")
+            context.user_data.clear()
             return ConversationHandler.END
+        
+        db.update_event_field(event_id, field, value) # непонятно зачем это но пусть будет
 
         # Получаем актуальные данные мероприятия
         event = db.get_event_by_id(event_id)
@@ -819,28 +828,35 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Обновляем напоминание если нужно
         if field in ("end_date", "event_time"):
-            event = db.get_event_by_id(event_id)
-            end_date = datetime.strptime(event["end_date"], "%Y-%m-%d").date()
-            event_time = datetime.strptime(event["event_time"], "%H:%M").time()
-            event_datetime = datetime.combine(end_date, event_time)
-            reminder_time = event_datetime - timedelta(hours=3)
+            try:
+                event = db.get_event_by_id(event_id)
+                end_date = datetime.strptime(event["end_date"], "%Y-%m-%d").date()
+                event_time = datetime.strptime(event["event_time"], "%H:%M").time()
+                event_datetime = datetime.combine(end_date, event_time)
+                reminder_time = event_datetime - timedelta(hours=3)
 
-            # Удаляем старую задачу
-            job_name = f"reminder_{event_id}"
-            for job in context.job_queue.jobs():
-                if job.name == job_name:
-                    job.schedule_removal()
+                # Удаляем старую задачу
+                job_name = f"reminder_{event_id}"
+                for job in context.job_queue.jobs():
+                    if job.name == job_name:
+                        job.schedule_removal()
 
-            # Создаем новую задачу если время актуально
-            if reminder_time > datetime.now():
-                delta = (reminder_time - datetime.now()).total_seconds()
-                context.job_queue.run_once(
-                    send_reminder,
-                    when=delta,
-                    data=event_id,
-                    name=job_name
+                # Создаем новую задачу если время актуально
+                if reminder_time > datetime.now():
+                    delta = (reminder_time - datetime.now()).total_seconds()
+                    context.job_queue.run_once(
+                        send_reminder,
+                        when=delta,
+                        data=event_id,
+                        name=job_name
+                    )
+                    logger.info(f"🔄 Напоминание для {event_id} перепланировано")
+            except Exception as e:
+                logger.error(f"Ошибка обновления напоминания: {str(e)}")
+                await update.message.reply_text(
+                    "✅ Дата/время обновлены, но напоминание не перепланировано.\n"
+                    f"Причина: {str(e)}"
                 )
-                logger.info(f"🔄 Напоминание для {event_id} перепланировано")
 
         # Обратно в админ-панель
         await admin_events(update, context)
@@ -849,6 +865,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка в edit_value: {str(e)}", exc_info=True)
         await update.message.reply_text("❌ Критическая ошибка при обновлении")
+        context.user_data.clear()
         return ConversationHandler.END
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
