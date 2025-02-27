@@ -202,7 +202,7 @@ class Database:
         result = cursor.fetchone()
         return result[0] if result else None
 
-    def delete_registration(self, user_id, event_id):
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-        self.conn.commit()
+    # def delete_registration(self, user_id, event_id):
+    #     cursor = self.conn.cursor()
+    #     cursor.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
+    #     self.conn.commit()
