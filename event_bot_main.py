@@ -79,6 +79,13 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 ) = range(12)
 
 
+def build_main_menu_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
+    commands = ADMIN_COMMANDS if is_admin else USER_COMMANDS
+    buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in commands]
+    keyboard = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(keyboard)
+
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -892,18 +899,9 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    keyboard = []
-
-    if user.id in ADMIN_IDS:
-        buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in ADMIN_COMMANDS]
-    else:
-        buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in USER_COMMANDS]
-
-    # Разбиваем кнопки на ряды по 2
-    for i in range(0, len(buttons), 2):
-        keyboard.append(buttons[i:i + 2])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    is_admin_user = is_admin(user.id)
+    
+    reply_markup = build_main_menu_keyboard(is_admin_user)
 
     try:
         with open("misc/hello.txt", "r", encoding="utf-8") as f:
@@ -951,18 +949,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     menu_text.append("\nℹ️ Выберите действие из меню или используйте команды!")
 
-    # Создаем клавиатуру в зависимости от прав
-    keyboard = []
-    if is_admin(user.id):
-        buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in ADMIN_COMMANDS]
-    else:
-        buttons = [InlineKeyboardButton(text, callback_data=cmd) for text, cmd in USER_COMMANDS]
-
-    # Разбиваем кнопки на ряды по 2
-    for i in range(0, len(buttons), 2):
-        keyboard.append(buttons[i:i + 2])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = build_main_menu_keyboard(is_admin(user.id))
     await message.reply_text("\n".join(menu_text), reply_markup=reply_markup)
 
 
