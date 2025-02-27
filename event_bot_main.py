@@ -939,7 +939,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = build_main_menu_keyboard(is_admin_user)
 
     try:
-        with open("misc/hello.txt", "r", encoding="utf-8") as f:
+        with open("misc/hello2.txt", "r", encoding="utf-8") as f:
             text = f.read()
     except FileNotFoundError:
         text = (
@@ -949,10 +949,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Отправка пикчи
     chat_id = update.effective_chat.id
+    try:
+        with open("misc/hello_horse.txt", "r", encoding="utf-8") as f:
+            photo_text = f.read()
+    except FileNotFoundError:
+        photo_text = ""
     with open('misc/hello-horse.jpg', 'rb') as photo_file:
         await context.bot.send_photo(
             chat_id=chat_id,
             photo=photo_file,
+            caption=photo_text
             parse_mode='MarkdownV2'
         )
 
