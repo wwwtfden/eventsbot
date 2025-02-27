@@ -8,6 +8,7 @@ services:
       - ./database:/app/database
       - ./bot_config.ini:/app/bot_config.ini
       - ./logs:/app/logs
+      - ./misc:/app/misc
     environment:
       - TZ=Europe/Moscow
     ports:
@@ -15,4 +16,6 @@ services:
 
 volumes:
   logs:
+    driver: local
+  misc:
     driver: local

@@ -54,14 +54,14 @@ DATABASE_NAME = config['Main']['DATABASE_NAME']
 persistence = PicklePersistence(filepath="conversationbot")
 
 USER_COMMANDS = [
-    ("📅 Список мероприятий", "events"),
-    ("📌 Мои записи", "myevents"),
-    ("ℹ️ Помощь", "help")
+    ("📆 Выбрать сессию", "events"),
+    ("🧑‍💻 Мои записи", "myevents"),
+    ("🩹 Нужна помощь", "help")
 ]
 
 ADMIN_COMMANDS = USER_COMMANDS + [
-    ("🛠 Управление мероприятиями", "adminevents"),
-    ("➕ Создать мероприятие", "createevent")
+    ("🛠 Управление сессиями", "adminevents"),
+    ("➕ Создать сессию", "createevent")
 ]
 
 # Состояния для ConversationHandler
@@ -95,7 +95,7 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         event_time = datetime.strptime(event['event_time'], "%H:%M").strftime("%H:%M")
 
         try:
-            with open("message.txt", "r", encoding="utf-8") as f:
+            with open("misc/message.txt", "r", encoding="utf-8") as f:
                 template = f.read()
             if "{event_time}" not in template:
                 template += "\nВремя начала: {event_time}"
@@ -171,7 +171,14 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(event_text, callback_data=f"event_{event_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await message.reply_text("Выберите мероприятие:", reply_markup=reply_markup)
+
+        try:
+            with open("misc/events_info.txt", "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            text = "Выберите мероприятие:"
+
+        await message.reply_text(text, reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Ошибка в show_events: {str(e)}", exc_info=True)
@@ -341,7 +348,7 @@ async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['link'] = link
 
     try:
-        with open("link-template.txt", "r", encoding="utf-8") as f:
+        with open("misc/link-template.txt", "r", encoding="utf-8") as f:
             template = f.read()
     except FileNotFoundError:
         template = "Ссылка на мероприятие: {link}"
@@ -859,10 +866,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = (
+    try:
+        with open("misc/hello.txt", "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = (
         "Привет! Я бот для записи на коня.\n"
         "Выберите действие:"
-    )
+        )
+
     message = update.message or update.callback_query.message
     await message.reply_text(text, reply_markup=reply_markup)
 
