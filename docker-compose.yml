@@ -3,11 +3,19 @@ version: '3.8'
 services:
   bot:
     build: .
-    restart: unless-stopped  # Автоматический перезапуск при падении
+    restart: unless-stopped
     volumes:
       - ./database:/app/database
       - ./bot_config.ini:/app/bot_config.ini
+      - ./logs:/app/logs
+      - ./misc:/app/misc
     environment:
       - TZ=Europe/Moscow
     ports:
       - "8443:8443"
+
+volumes:
+  logs:
+    driver: local
+  misc:
+    driver: local

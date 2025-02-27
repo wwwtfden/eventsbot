@@ -18,17 +18,19 @@ from telegram.ext import (
 import sqlite3
 from datetime import datetime, timedelta, time
 
+import improved_logger as ilg
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,  # Уровень логирования
+    level=logging.INFO,
     handlers=[
-        RotatingFileHandler(
+        ilg.TimestampedRotatingFileHandler(
             "bot.log",
             maxBytes=5*1024*1024,  # 5 MB
-            backupCount=3,
-            encoding="utf-8"
+            backupCount=20,
+            # encoding="utf-8"
         ),
-        logging.StreamHandler()  # Для вывода в консоль
+        logging.StreamHandler()
     ]
 )
 
@@ -58,9 +60,9 @@ except FileNotFoundError:
 persistence = PicklePersistence(filepath="conversationbot")
 
 USER_COMMANDS = [
-    ("📅 Список мероприятий", "events"),
-    ("📌 Мои записи", "myevents"),
-    ("ℹ️ Помощь", "help")
+    ("📆 Выбрать сессию", "events"),
+    ("🧑‍💻 Мои записи", "myevents"),
+    ("ℹ️ Меню", "menu")
 ]
 
 ADMIN_COMMANDS = USER_COMMANDS + [
@@ -79,7 +81,6 @@ ADMIN_COMMANDS = USER_COMMANDS + [
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-    #return user_id == ADMIN_ID
 
 global db
 db = None
@@ -99,7 +100,7 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
         event_time = datetime.strptime(event['event_time'], "%H:%M").strftime("%H:%M")
 
         try:
-            with open("message.txt", "r", encoding="utf-8") as f:
+            with open("misc/message.txt", "r", encoding="utf-8") as f:
                 template = f.read()
             if "{event_time}" not in template:
                 template += "\nВремя начала: {event_time}"
@@ -177,7 +178,14 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(event_text, callback_data=f"event_{event_id}")])
 
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await message.reply_text("Выберите мероприятие:", reply_markup=reply_markup)
+
+        try:
+            with open("misc/events_info.txt", "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            text = "Выберите мероприятие:"
+
+        await message.reply_text(text, reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Ошибка в show_events: {str(e)}", exc_info=True)
@@ -347,7 +355,7 @@ async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['link'] = link
 
     try:
-        with open("link-template.txt", "r", encoding="utf-8") as f:
+        with open("misc/link-template.txt", "r", encoding="utf-8") as f:
             template = f.read()
     except FileNotFoundError:
         template = "Ссылка на мероприятие: {link}"
@@ -881,6 +889,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await admin_events(update, context)
         context.user_data.clear()  # Дополнительная очистка
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     keyboard = []
@@ -896,15 +905,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    text = (
+    try:
+        with open("misc/hello.txt", "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = (
         "Привет! Я бот для записи на коня.\n"
         "Выберите действие:"
     )
+    
+    # Отправка пикчи
+    chat_id = update.effective_chat.id
+    with open('misc/hello-horse.jpg', 'rb') as photo_file:
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=photo_file,
+            parse_mode='MarkdownV2'
+        )
+
     message = update.message or update.callback_query.message
     await message.reply_text(text, reply_markup=reply_markup)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.callback_query:
         message = update.callback_query.message
         user = update.callback_query.from_user
@@ -912,7 +935,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message
         user = update.effective_user
 
-    help_text = [
+    menu_text = [
         "📋 Доступные команды:",
         "/start - Главное меню",
         "/events - Показать все мероприятия",
@@ -920,13 +943,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     if is_admin(user.id):
-        help_text.extend([
+        menu_text.extend([
             "\n⚙️ Админ-команды:",
             "/adminevents - Управление мероприятиями",
             "/createevent - Создать новое мероприятие"
         ])
 
-    help_text.append("\nℹ️ Выберите действие из меню или используйте команды!")
+    menu_text.append("\nℹ️ Выберите действие из меню или используйте команды!")
 
     # Создаем клавиатуру в зависимости от прав
     keyboard = []
@@ -940,7 +963,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append(buttons[i:i + 2])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await message.reply_text("\n".join(help_text), reply_markup=reply_markup)
+    await message.reply_text("\n".join(menu_text), reply_markup=reply_markup)
 
 
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -953,8 +976,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         command = query.data
         user_id = query.from_user.id
 
-        if command == "help":
-            await help_command(update, context)
+        if command == "menu":
+            await menu_command(update, context)
         elif command == "events":
             await show_events(update, context)
         elif command == "myevents":
@@ -1053,7 +1076,7 @@ def main():
 
     # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("events", show_events))
     application.add_handler(CommandHandler("myevents", my_events))
 
