@@ -69,8 +69,8 @@ USER_COMMANDS = [
 ]
 
 ADMIN_COMMANDS = USER_COMMANDS + [
-    ("🛠 Управление мероприятиями", "adminevents"),
-    ("➕ Создать мероприятие", "createevent")
+    ("🛠 Управление сессиями", "adminevents"),
+    ("➕ Создать сессию", "createevent")
 ]
 
 # Состояния для ConversationHandler
@@ -223,7 +223,7 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_admin_user = is_admin(user.id)
 
         if not events:
-            await message.reply_text("Сейчас нет доступных мероприятий.")
+            await message.reply_text("Сейчас нет доступных сессий.")
             return
 
         keyboard = []
@@ -272,7 +272,7 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if success:
                 await query.edit_message_text(
-                    f"✅ Вы успешно записаны на мероприятие!" #Осталось мест: {available - 1} 
+                    f"✅ Ты записан(а) на сессию!" #Осталось мест: {available - 1} 
                 )
             else:
                 keyboard = [
@@ -282,7 +282,7 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]
                 ]
                 await query.edit_message_text(
-                    "⚠️ Вы уже записаны на это мероприятие. Отменить регистрацию?",
+                    "⚠️ Ты уже записан(а) на эту сессию. Отменить регистрацию?",
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
         else:
@@ -306,14 +306,14 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Получаем полные данные о мероприятии
         event = db.get_event_by_id(event_id)
         if not event:
-            await query.edit_message_text("❌ Мероприятие не найдено")
+            await query.edit_message_text("❌ Сессия не найдена")
             return
 
         formatted_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
         event_time = event['event_time']
 
         message_text = (
-            f"📌 Мероприятие ID: {event_id}\n"
+            f"📌 ID сессии: {event_id}\n"
             f"📅 Дата: {formatted_date}\n"
             f"⏰ Время: {event_time}\n"
             f"👥 Участники: {event['current_participants']}/{event['max_participants']}\n"
@@ -549,7 +549,7 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     event_id = context.user_data.get('delete_event_id')
     if not event_id:
-        await query.edit_message_text("❌ Мероприятие не найдено.")
+        await query.edit_message_text("❌ Сессия не найдена.")
         return
 
     try:
@@ -749,7 +749,7 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message or update.callback_query.message
 
         if not events:
-            await message.reply_text("📭 Вы не зарегистрированы ни на одно мероприятие")
+            await message.reply_text("📭 Ты не зарегистрирован(а) ни на одну сессию!")
             return
 
         keyboard = []
@@ -781,7 +781,7 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await message.reply_text(
-            "📌 Ваши мероприятия:",
+            "📌 Твои сессии:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -804,11 +804,11 @@ async def show_event_details(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     formatted_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
     message_text = (
-        f"📌 Детали мероприятия:\n\n"
+        f"📌 Детали сессии:\n\n"
         f"📅 Дата: {formatted_date}\n"
         f"⏰ Время: {event['event_time']}\n"
         f"📝 Описание: {event['info'] or 'Без описания'}\n\n"
-        f"Статус: ✅ Вы записаны"
+        f"Статус: ✅ Записан"
     )
     
     await query.edit_message_text(message_text)
@@ -839,8 +839,8 @@ async def edit_event_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = [
             [InlineKeyboardButton("Макс. участников", callback_data="field_max_participants")],
-            [InlineKeyboardButton("Дата мероприятия", callback_data="field_end_date")],
-            [InlineKeyboardButton("Время мероприятия", callback_data="field_event_time")],
+            [InlineKeyboardButton("Дата сессии", callback_data="field_end_date")],
+            [InlineKeyboardButton("Время сессии", callback_data="field_event_time")],
             [InlineKeyboardButton("Описание", callback_data="field_info")]
         ]
         
@@ -876,8 +876,8 @@ async def edit_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         field_data = {
             'max_participants': ('максимальное количество участников', event['max_participants']),
-            'end_date': ('дату мероприятия', event['end_date']),
-            'event_time': ('время мероприятия', event['event_time']),
+            'end_date': ('дату сессии', event['end_date']),
+            'event_time': ('время сессии', event['event_time']),
             'info': ('описание', event['info'])
         }
 
@@ -1043,7 +1043,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     menu_text = [
         "📋 Доступные команды:",
         "/start - Главное меню",
-        "/events - Показать все мероприятия",
+        "/events - Показать все сессии",
         "/myevents - Показать мои записи",
         "/menu - Зайти в меню",
         "/help - Нужна помощь!"
@@ -1052,8 +1052,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(user.id):
         menu_text.extend([
             "\n⚙️ Админ-команды:",
-            "/adminevents - Управление мероприятиями",
-            "/createevent - Создать новое мероприятие"
+            "/adminevents - Управление сессиями",
+            "/createevent - Создать новую сессию"
         ])
 
     menu_text.append("\nℹ️ Выбери действие из меню или используй команды!")
