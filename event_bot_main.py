@@ -236,6 +236,7 @@ async def show_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @error_logger
+@error_logger
 async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -253,10 +254,19 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if success:
                 await query.edit_message_text(
-                    f"✅ Вы успешно записаны на мероприятие!" #Осталось мест: {available - 1}
+                    f"✅ Вы успешно записаны на мероприятие!" #Осталось мест: {available - 1} 
                 )
             else:
-                await query.edit_message_text("⚠️ Вы уже записаны на это мероприятие!")
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ Да", callback_data=f"confirm_unreg_{event_id}"),
+                        InlineKeyboardButton("❌ Нет", callback_data="cancel_unreg")
+                    ]
+                ]
+                await query.edit_message_text(
+                    "⚠️ Вы уже записаны на это мероприятие. Отменить регистрацию?",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
         else:
             await query.edit_message_text("⚠️ К сожалению, все места заняты!")
 
@@ -328,6 +338,31 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return DELETE_CONFIRM
     else:
         await query.edit_message_text("❌ Неизвестное действие")
+
+
+@error_logger
+@error_logger
+async def handle_unregistration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        if query.data.startswith("confirm_unreg_"):
+            event_id = int(query.data.split("_")[-1])  # Безопасное получение ID
+            user_id = query.from_user.id
+            
+            if db.delete_registration(user_id, event_id):
+                await query.edit_message_text("✅ Регистрация успешно отменена!")
+                await show_events(update, context)
+            else:
+                await query.edit_message_text("❌ Ошибка отмены регистрации")
+
+        elif query.data == "cancel_unreg":
+            await query.edit_message_text("✖️ Действие отменено")
+        
+    except Exception as e:
+        logger.error(f"Ошибка в handle_unregistration: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Произошла внутренняя ошибка")
 
 
 @error_logger
@@ -770,7 +805,6 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     db.delete_registration(update.effective_user.id, event_id)
     await query.edit_message_text("✅ Регистрация отменена!")
     
-    # Обновляем список мероприятий
     await my_events(update, context)
 
 
@@ -1261,6 +1295,7 @@ def main():
     application.add_handler(remove_user_conv)
 
     # Обработчики callback-запросов
+    application.add_handler(CallbackQueryHandler(handle_unregistration, pattern=r"^(confirm_unreg_\d+|cancel_unreg)$"))
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
     application.add_handler(CallbackQueryHandler(edit_event_start, pattern="^edit_"))
     # application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^unreg_"))
