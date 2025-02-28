@@ -93,7 +93,16 @@ def error_logger(func):
         try:
             return await func(update, context)
         except Exception as e:
-            logger.error(f"Error in {func.__name__}: {str(e)}", exc_info=True)
+            try:
+                # Частичный сброс данных текущего пользователя
+                if context.user_data:
+                    context.user_data.clear()
+                if context.chat_data:
+                    context.chat_data.clear()
+                logger.error(f"Error in {func.__name__}: {str(e)}", exc_info=True)
+            except Exception as clear_error:
+                logger.error(f"Ошибка при очистке данных: {str(clear_error)}")
+
             await error_handler(update, context)
     return wrapper
 
@@ -154,6 +163,14 @@ async def check_admin_access(update: Update) -> bool:
         await message.reply_text("⛔ У вас нет прав администратора!")
         return False
     return True
+
+
+@error_logger
+async def reset_persistence(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_admin(update.effective_user.id):
+        await context.application.persistence.drop_user_data()
+        await context.application.persistence.drop_chat_data()
+        await update.message.reply_text("♻️ Все данные persistence сброшены")
 
 
 @error_logger
@@ -1108,6 +1125,9 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @error_logger
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        # Сброс persistence при критических ошибках
+        await context.application.persistence.drop_user_data()
+        await context.application.persistence.drop_chat_data()
         if update.message:
             await update.message.reply_text("❌ Произошла внутренняя ошибка")
         elif update.callback_query:
@@ -1153,6 +1173,9 @@ async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка восстановления: {str(e)}", exc_info=True)
+        await context.application.persistence.drop_user_data()
+        await context.application.persistence.drop_chat_data()
+        logger.info("Полный сброс persistence после ошибки восстановления")
 
 
 def main():
@@ -1184,6 +1207,8 @@ def main():
     application.add_handler(CommandHandler("events", show_events))
     application.add_handler(CommandHandler("myevents", my_events))
     application.add_handler(CommandHandler("help", help_command))
+
+    application.add_handler(CommandHandler("reset_persistence", reset_persistence))
 
     # Административные обработчики
     application.add_handler(CommandHandler("adminevents", admin_events))
