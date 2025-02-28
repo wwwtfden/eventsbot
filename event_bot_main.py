@@ -64,7 +64,7 @@ USER_COMMANDS = [
     ("📆 Выбрать сессию", "events"),
     ("🧑‍💻 Мои записи", "myevents"),
     ("ℹ️ Меню", "menu"),
-    ("🆘 Помощь", "help") 
+    ("🩹 Нужна помощь", "help") 
 ]
 
 ADMIN_COMMANDS = USER_COMMANDS + [
