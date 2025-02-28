@@ -126,10 +126,8 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
                 template += "\nВремя начала: {event_time}"
         except FileNotFoundError:
             template = (
-                "Привет! 🐴\n"
-                "Рабочая сессия начнется в {event_time}.\n"
-                "Ссылка: ...\n"
-                "Оля #КоньНеВалялся"
+                "Привет!\n"
+                "Мероприятие начнется в {event_time}.\n"
             )
 
         message_text = template.format(event_time=event_time)
@@ -255,7 +253,7 @@ async def event_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if success:
                 await query.edit_message_text(
-                    f"✅ Вы успешно записаны на мероприятие! Осталось мест: {available - 1}"
+                    f"✅ Вы успешно записаны на мероприятие!" #Осталось мест: {available - 1}
                 )
             else:
                 await query.edit_message_text("⚠️ Вы уже записаны на это мероприятие!")
