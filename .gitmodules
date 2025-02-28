@@ -1,0 +1,4 @@
+[submodule "misc"]
+	path = misc
+	url = git@github.com:wwwtfden/misc.git
+	branch = fallen_horse_bot
