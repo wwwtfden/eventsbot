@@ -1,10 +1,10 @@
 import sqlite3
 import logging
 
-# logging.basicConfig(
-#     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-#     level=logging.INFO # .INFO после исправления багов
-# )
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,11 +133,12 @@ class Database:
                     e.id, 
                     e.end_date, 
                     e.event_time,
-                    COALESCE(e.info, 'Без описания')  -- Заменяем NULL
+                    COALESCE(e.info, 'Без описания')
                 FROM events e
                 JOIN registrations r ON e.id = r.event_id
                 WHERE r.user_id = ?
-            ''', (user_id,))
+                    AND datetime(e.end_date || ' ' || e.event_time) > datetime('now', '-6 hours')
+            ''', (user_id,))  # Добавлено условие
             return cursor.fetchall()
         except Exception as e:
             logger.error(f"Ошибка БД: {str(e)}")
@@ -200,8 +201,3 @@ class Database:
         cursor.execute("SELECT user_id FROM registrations WHERE username = ?", (username,))
         result = cursor.fetchone()
         return result[0] if result else None
-
-    def delete_registration(self, user_id, event_id):
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM registrations WHERE user_id = ? AND event_id = ?", (user_id, event_id))
-        self.conn.commit()

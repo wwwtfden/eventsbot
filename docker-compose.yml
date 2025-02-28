@@ -3,7 +3,7 @@ version: '3.8'
 services:
   bot:
     build: .
-    restart: unless-stopped  # Автоматический перезапуск при падении
+    restart: unless-stopped
     volumes:
       - ./database:/app/database
       - ./bot_config.ini:/app/bot_config.ini
