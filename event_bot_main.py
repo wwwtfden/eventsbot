@@ -951,24 +951,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     # Отправка пикчи
-    chat_id = update.effective_chat.id
-    try:
-        with open("misc/hello_horse.txt", "r", encoding="utf-8") as f:
-            photo_text = f.read()
-    except FileNotFoundError:
-        photo_text = ""
-    with open('misc/hello-horse.jpg', 'rb') as photo_file:
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=photo_file,
-            # caption=photo_text,
-            parse_mode='MarkdownV2'
-        )
+    # chat_id = update.effective_chat.id
+    # try:
+    #     with open("misc/hello_horse.txt", "r", encoding="utf-8") as f:
+    #         photo_text = f.read()
+    # except FileNotFoundError:
+    #     photo_text = ""
+    # with open('misc/hello-horse.jpg', 'rb') as photo_file:
+    #     await context.bot.send_photo(
+    #         chat_id=chat_id,
+    #         photo=photo_file,
+    #         # caption=photo_text,
+    #         parse_mode='MarkdownV2'
+    #     )
     
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=photo_text
-    )
+    # await context.bot.send_message(
+    #     chat_id=chat_id,
+    #     text=photo_text
+    # )
 
     message = update.message or update.callback_query.message
     await message.reply_text(text, reply_markup=reply_markup)
