@@ -700,25 +700,24 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         keyboard = []
+
         for event in events:
             try:
                 if len(event) < 4:
-                    logger.error(f"Некорректные данные мероприятия: {event}")
                     continue
 
                 event_id, end_date, event_time, info = event
-
-                info = info or "Без описания"
                 info_display = info[:20] + "..." if len(info) > 20 else info
 
-                try:
-                    formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-                except ValueError:
-                    formatted_date = "Некорр. дата"
-                    logger.error(f"Ошибка формата даты: {end_date}")
-
-                button_text = f"{formatted_date} {event_time} | {info_display}"
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"unreg_{event_id}")])
+                formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
+                
+                # Кнопка с информацией о мероприятии
+                btn_text = f"{formatted_date} {event_time} | {info_display}"
+                # Кнопка для отмены регистрации
+                keyboard.append([
+                    InlineKeyboardButton(btn_text, callback_data=f"detail_{event_id}"),
+                    InlineKeyboardButton("❌", callback_data=f"cancel_{event_id}")
+                ])
 
             except Exception as e:
                 logger.error(f"Ошибка обработки мероприятия {event}: {str(e)}", exc_info=True)
@@ -739,14 +738,40 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @error_logger
+async def show_event_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    event_id = int(query.data.split("_")[1])
+    event = db.get_event_by_id(event_id)
+    
+    if not event:
+        await query.edit_message_text("❌ Мероприятие не найдено")
+        return
+
+    formatted_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
+    message_text = (
+        f"📌 Детали мероприятия:\n\n"
+        f"📅 Дата: {formatted_date}\n"
+        f"⏰ Время: {event['event_time']}\n"
+        f"📝 Описание: {event['info'] or 'Без описания'}\n\n"
+        f"Статус: ✅ Вы записаны"
+    )
+    
+    await query.edit_message_text(message_text)
+
+
+@error_logger
 async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     event_id = int(query.data.split("_")[1])
     db.delete_registration(update.effective_user.id, event_id)
-
-    await query.edit_message_text("Регистрация отменена!")
+    await query.edit_message_text("✅ Регистрация отменена!")
+    
+    # Обновляем список мероприятий
+    await my_events(update, context)
 
 
 @error_logger
@@ -1238,8 +1263,12 @@ def main():
     # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
     application.add_handler(CallbackQueryHandler(edit_event_start, pattern="^edit_"))
-    application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^unreg_"))
+    # application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^unreg_"))
     # application.add_handler(CallbackQueryHandler(admin_actions, pattern=r"^view_\d+$"))
+
+    application.add_handler(CallbackQueryHandler(show_event_details, pattern="^detail_"))
+    application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^cancel_"))
+
     application.add_handler(
         CallbackQueryHandler(admin_actions, pattern=r"^delete_\d+$")
     )
