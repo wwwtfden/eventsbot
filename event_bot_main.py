@@ -53,6 +53,7 @@ except (configparser.NoOptionError, configparser.NoSectionError):
 
 DATABASE_NAME = config['Main']['DATABASE_NAME']
 
+# Сброс состояния при перезапуске
 try:
     os.remove(os.path.join(os.path.dirname(__file__), "conversationbot"))
 except FileNotFoundError:
@@ -724,7 +725,7 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([
                 InlineKeyboardButton(
                     event_text,
-                    callback_data=f"view_{event_id}"  # <- Вот это важно
+                    callback_data=f"view_{event_id}"
                 ),
                 InlineKeyboardButton("✏️", callback_data=f"edit_{event_id}"),
                 InlineKeyboardButton("❌", callback_data=f"delete_{event_id}")
@@ -1022,29 +1023,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f.read()
     except FileNotFoundError:
         text = (
-        "Привет! Я бот для записи на коня.\n"
+        "Привет! Я бот для записи на мероприятия.\n"
         "Выберите действие:"
     )
-    
-    # Отправка пикчи
-    # chat_id = update.effective_chat.id
-    # try:
-    #     with open("misc/hello_horse.txt", "r", encoding="utf-8") as f:
-    #         photo_text = f.read()
-    # except FileNotFoundError:
-    #     photo_text = ""
-    # with open('misc/hello-horse.jpg', 'rb') as photo_file:
-    #     await context.bot.send_photo(
-    #         chat_id=chat_id,
-    #         photo=photo_file,
-    #         # caption=photo_text,
-    #         parse_mode='MarkdownV2'
-    #     )
-    
-    # await context.bot.send_message(
-    #     chat_id=chat_id,
-    #     text=photo_text
-    # )
 
     message = update.message or update.callback_query.message
     await message.reply_text(text, reply_markup=reply_markup)
@@ -1222,7 +1203,7 @@ def main():
             CREATE_MAX: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_max)],
             CREATE_END: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_end)],
             CREATE_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_time)],
-            CREATE_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_info)]  # Добавлено
+            CREATE_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_info)]
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         persistent=True,
@@ -1232,7 +1213,7 @@ def main():
 
     edit_event_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(edit_event_start, pattern=r"^edit_\d+$")  # Обработка кнопки "✏️"
+            CallbackQueryHandler(edit_event_start, pattern=r"^edit_\d+$")
         ],
         states={
             EDIT_CHOICE: [
@@ -1323,9 +1304,6 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_unregistration, pattern=r"^(confirm_unreg_\d+|cancel_unreg)$"))
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
     application.add_handler(CallbackQueryHandler(edit_event_start, pattern="^edit_"))
-    # application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^unreg_"))
-    # application.add_handler(CallbackQueryHandler(admin_actions, pattern=r"^view_\d+$"))
-
     application.add_handler(CallbackQueryHandler(show_event_details, pattern="^detail_"))
     application.add_handler(CallbackQueryHandler(cancel_registration, pattern="^cancel_"))
 
