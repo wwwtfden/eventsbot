@@ -4,6 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import configparser
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InputFile
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,6 +18,7 @@ from telegram.ext import (
 )
 import sqlite3
 from datetime import datetime, timedelta, time
+from export_handler import generate_export_file
 
 import improved_logger as ilg
 
@@ -72,7 +74,8 @@ USER_COMMANDS = [
 
 ADMIN_COMMANDS = USER_COMMANDS + [
     ("🛠 Управление сессиями", "adminevents"),
-    ("➕ Создать сессию", "createevent")
+    ("➕ Создать сессию", "createevent"),
+    ("📤 Выгрузить историю", "export_history")
 ]
 
 # Состояния для ConversationHandler
@@ -1147,6 +1150,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif command.startswith("sendmsg_"):
             await send_message_to_participants(update, context)
             return
+        elif command == "export_history":
+            if user_id in ADMIN_IDS:
+                await export_history(update, context)
+            else:
+                await query.edit_message_text("⛔ Доступ запрещен!")
         else:
             await query.edit_message_text("⚠️ Команда не распознана")
 
@@ -1175,6 +1183,25 @@ async def cancel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     await query.edit_message_text("✖️ Отправка ссылки отменена")
     return ConversationHandler.END
+
+
+@error_logger
+async def export_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        buffer = generate_export_file(db.conn)
+        await context.bot.send_document(
+            chat_id=query.from_user.id,
+            document=InputFile(buffer, filename="history_export.xlsx"),
+            caption="📊 Полный экспорт данных"
+        )
+        buffer.close()
+
+    except Exception as e:
+        logger.error(f"Ошибка экспорта: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при выгрузке данных")
 
 
 async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
@@ -1368,6 +1395,9 @@ def main():
     application.add_handler(CallbackQueryHandler(send_message_to_participants, pattern=r"^sendmsg_\d+$"))
     application.add_handler(CallbackQueryHandler(menu_handler))
     application.add_handler(CallbackQueryHandler(handle_back_button, pattern="^adminevents$"))
+    application.add_handler(
+        CallbackQueryHandler(export_history, pattern="^export_history$")
+    )
 
     # Запуск бота
     application.run_polling()
