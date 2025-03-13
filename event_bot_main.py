@@ -41,6 +41,8 @@ config.read('bot_config.ini', encoding='utf-8')
 
 TOKEN = config['Main']['TOKEN']
 admin_url = config['Main']['HELP_ACCOUNT']
+hours_to_remind = (int)(config['Main']['HOURS_REMINDER'])
+delay_to_send_notification = (int)(config['Main']['NOTIFICATION_DELAY_SEC'])
 
 try:
     ADMIN_IDS = [
@@ -112,6 +114,14 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+# def get_message_from_file(filename: str, default_text: str) -> str:
+#     try:
+#         with open(f"misc/{filename}", "r", encoding="utf-8") as f:
+#             return f.read().strip()
+#     except FileNotFoundError:
+#         return default_text
+
+
 global db
 db = None
 
@@ -155,6 +165,16 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка в send_reminder: {str(e)}", exc_info=True)
+
+
+async def send_delayed_notification(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = context.job.data["user_id"]
+        message_text = context.job.data["message_text"]
+        await context.bot.send_message(chat_id=user_id, text=message_text)
+    except Exception as e:
+        logger.error(f"Ошибка отправки отложенного уведомления {user_id}: {str(e)}")
+
 
 # Обработчики команд
 async def check_admin_access(update: Update) -> bool:
@@ -530,11 +550,23 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     username = query.data.split("_")[1]
     event_id = context.user_data["current_event_id"]
-
     user_id = db.get_user_id_by_username(username)
 
     if user_id:
         db.delete_registration(user_id, event_id)
+
+        # Сообщение при удалении админом
+        try:
+            with open("misc/user_banned.txt", "r", encoding="utf-8") as f:
+                message_text = f.read().strip()
+        except FileNotFoundError:
+            message_text = "Тебя удалили"
+
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message_text)
+        except Exception as e:
+            logger.error(f"Не удалось отправить {user_id}: {str(e)}")
+
         await query.edit_message_text(f"✅ Участник @{username} удален!")
     else:
         await query.edit_message_text("❌ Пользователь не найден")
@@ -658,7 +690,7 @@ async def create_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["end_date"],
             datetime.strptime(event_time, "%H:%M").time()
         )
-        reminder_time = event_datetime - timedelta(hours=3)
+        reminder_time = event_datetime - timedelta(hours=hours_to_remind)
 
         if reminder_time > datetime.now():
             delta = (reminder_time - datetime.now()).total_seconds()
@@ -820,10 +852,30 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     event_id = int(query.data.split("_")[1])
-    db.delete_registration(update.effective_user.id, event_id)
+    user_id = update.effective_user.id
+    db.delete_registration(user_id, event_id)
+
+    # Формируем сообщение
+    try:
+        with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
+            message_text = f.read().strip()
+    except FileNotFoundError:
+        message_text = "Ты удалился"
+
+    # Планируем отправку через 5 минут
+    context.job_queue.run_once(
+        callback=send_delayed_notification,
+        when=delay_to_send_notification,  # 300 секунд = 5 минут
+        data={
+            "user_id": user_id,
+            "message_text": message_text
+        },
+        name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
+    )
+
     await query.edit_message_text("✅ Регистрация отменена!")
-    
     await my_events(update, context)
+
 
 
 @error_logger
@@ -980,7 +1032,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             end_date = datetime.strptime(event["end_date"], "%Y-%m-%d").date()
             event_time = datetime.strptime(event["event_time"], "%H:%M").time()
             event_datetime = datetime.combine(end_date, event_time)
-            reminder_time = event_datetime - timedelta(hours=3)
+            reminder_time = event_datetime - timedelta(hours=hours_to_remind)
 
             job_name = f"reminder_{event_id}"
             for job in context.job_queue.jobs():
@@ -1139,7 +1191,7 @@ async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
             end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
             event_time = datetime.strptime(event_time_str, "%H:%M").time()
             event_datetime = datetime.combine(end_date, event_time)
-            reminder_time = event_datetime - timedelta(hours=3)
+            reminder_time = event_datetime - timedelta(hours=hours_to_remind)
 
             # Создаем задачу если время актуально
             if reminder_time > datetime.now():
