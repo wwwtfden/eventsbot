@@ -83,8 +83,9 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     CREATE_MAX, CREATE_END, CREATE_TIME, CREATE_INFO,
     EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM,
     WAITING_FOR_MESSAGE, WAITING_FOR_LINK, CONFIRM_LINK,
-    REMOVE_USER_START, REMOVE_USER_SELECT
-) = range(12)
+    REMOVE_USER_START, REMOVE_USER_SELECT,
+    EXPORT_CHOICE, EXPORT_START_DATE, EXPORT_END_DATE
+) = range(15)
 
 
 def build_main_menu_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
@@ -609,6 +610,55 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @error_logger
+async def perform_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data = context.user_data
+
+    try:
+        start_date = user_data.get('export_start')
+        end_date = user_data.get('export_end')
+
+        if start_date and end_date:
+            # Преобразуем строки в datetime для сравнения
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            if start_dt > end_dt:
+                await update.message.reply_text("❌ Начальная дата не может быть позже конечной!")
+                context.user_data.clear()
+                return ConversationHandler.END
+
+        logger.info(f"Export params: start={start_date}, end={end_date}")
+
+        period_text = ""
+        if not start_date and not end_date:
+            period_text = "Весь период"
+        else:
+            period_text = f"{start_date or 'Начало'} – {end_date or 'Сейчас'}"
+
+        # Генерация файла
+        buffer = generate_export_file(
+            db.conn,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        # Отправка файла
+        await context.bot.send_document(
+            chat_id=update.effective_user.id,
+            document=InputFile(buffer, filename="history_export.xlsx"),
+            caption=f"📊 Экспорт данных ({period_text})"
+        )
+        buffer.close()
+
+    except Exception as e:
+        logger.error(f"Export error: {str(e)}", exc_info=True)
+        await update.message.reply_text("❌ Не удалось сформировать отчёт")
+
+    # Гарантированный сброс данных
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+@error_logger
 async def create_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_admin_access(update):
         return ConversationHandler.END
@@ -777,6 +827,89 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @error_logger
+async def start_export_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    # Очистка предыдущих данных
+    context.user_data.clear()
+
+    keyboard = [
+        [InlineKeyboardButton("Весь период", callback_data="all")],
+        [InlineKeyboardButton("Указать даты", callback_data="custom")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        "📅 Выберите период для экспорта:",
+        reply_markup=reply_markup
+    )
+    return EXPORT_CHOICE
+
+
+@error_logger
+async def handle_export_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    choice = query.data
+    if choice == "all":
+        # Явная установка None, даже если ранее были данные
+        context.user_data['export_start'] = None
+        context.user_data['export_end'] = None
+        return await perform_export(update, context)
+    elif choice == "custom":
+        await query.edit_message_text("📆 Введите начальную дату (ГГГГ-ММ-ДД) или /skip:")
+        return EXPORT_START_DATE
+
+
+@error_logger
+async def process_start_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    if text.lower() == "/skip":
+        context.user_data['export_start'] = None
+        await update.message.reply_text("⏩ Начальная дата не указана. Экспорт с самого начала.")
+        return await process_end_date(update, context)  # Переход сразу к конечной дате
+    else:
+        try:
+            # datetime.strptime(text, "%Y-%m-%d")
+            datetime.strptime(text + " 00:00", "%Y-%m-%d %H:%M")
+            context.user_data['export_start'] = text
+            await update.message.reply_text("📆 Введите конечную дату (ГГГГ-ММ-ДД) или /skip:")
+            return EXPORT_END_DATE
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
+            return EXPORT_START_DATE
+
+
+@error_logger
+async def process_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    if text.lower() == "/skip":
+        context.user_data['export_end'] = None
+        await update.message.reply_text("⏩ Конечная дата не указана. Экспорт до текущего момента.")
+    else:
+        try:
+            # datetime.strptime(text, "%Y-%m-%d")
+            datetime.strptime(text + " 00:00", "%Y-%m-%d %H:%M")
+            context.user_data['export_end'] = text
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
+            return EXPORT_END_DATE
+
+    return await perform_export(update, context)
+
+
+@error_logger
+async def cancel_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("🚫 Экспорт отменён")
+    return ConversationHandler.END
+
+
+@error_logger
 async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
@@ -798,10 +931,8 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 info_display = info[:20] + "..." if len(info) > 20 else info
 
                 formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-                
-                # Кнопка с информацией о мероприятии
+
                 btn_text = f"{formatted_date} {event_time} | {info_display}"
-                # Кнопка для отмены регистрации
                 keyboard.append([
                     InlineKeyboardButton(btn_text, callback_data=f"detail_{event_id}"),
                     InlineKeyboardButton("❌", callback_data=f"cancel_{event_id}")
@@ -865,10 +996,10 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     except FileNotFoundError:
         message_text = "Ты удалился"
 
-    # Планируем отправку через 5 минут
+    # Планируем отправку через ...
     context.job_queue.run_once(
         callback=send_delayed_notification,
-        when=delay_to_send_notification,  # 300 секунд = 5 минут
+        when=delay_to_send_notification,  # секунд
         data={
             "user_id": user_id,
             "message_text": message_text
@@ -1378,6 +1509,28 @@ def main():
         fallbacks = [CommandHandler("cancel", cancel)]
     )
     application.add_handler(remove_user_conv)
+
+    export_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_export_flow, pattern="^export_history$")
+        ],
+        states={
+            EXPORT_CHOICE: [
+                CallbackQueryHandler(handle_export_choice, pattern="^(all|custom)$")
+            ],
+            EXPORT_START_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_start_date)
+            ],
+            EXPORT_END_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_end_date)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_export)],
+        map_to_parent={ConversationHandler.END: ConversationHandler.END},
+        persistent=True,
+        name="export_conv"
+    )
+    application.add_handler(export_conv)
 
     # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(handle_unregistration, pattern=r"^(confirm_unreg_\d+|cancel_unreg)$"))
