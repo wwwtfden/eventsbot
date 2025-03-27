@@ -4,6 +4,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import configparser
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InputFile
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -17,6 +18,7 @@ from telegram.ext import (
 )
 import sqlite3
 from datetime import datetime, timedelta, time
+from export_handler import generate_export_file
 
 import improved_logger as ilg
 
@@ -41,6 +43,8 @@ config.read('bot_config.ini', encoding='utf-8')
 
 TOKEN = config['Main']['TOKEN']
 admin_url = config['Main']['HELP_ACCOUNT']
+hours_to_remind = (int)(config['Main']['HOURS_REMINDER'])
+delay_to_send_notification = (int)(config['Main']['NOTIFICATION_DELAY_SEC'])
 
 try:
     ADMIN_IDS = [
@@ -70,7 +74,8 @@ USER_COMMANDS = [
 
 ADMIN_COMMANDS = USER_COMMANDS + [
     ("🛠 Управление сессиями", "adminevents"),
-    ("➕ Создать сессию", "createevent")
+    ("➕ Создать сессию", "createevent"),
+    ("📤 Выгрузить историю", "export_history")
 ]
 
 # Состояния для ConversationHandler
@@ -78,8 +83,9 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     CREATE_MAX, CREATE_END, CREATE_TIME, CREATE_INFO,
     EDIT_CHOICE, EDIT_VALUE, DELETE_CONFIRM,
     WAITING_FOR_MESSAGE, WAITING_FOR_LINK, CONFIRM_LINK,
-    REMOVE_USER_START, REMOVE_USER_SELECT
-) = range(12)
+    REMOVE_USER_START, REMOVE_USER_SELECT,
+    EXPORT_CHOICE, EXPORT_START_DATE, EXPORT_END_DATE
+) = range(15)
 
 
 def build_main_menu_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
@@ -110,6 +116,14 @@ def error_logger(func):
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+# def get_message_from_file(filename: str, default_text: str) -> str:
+#     try:
+#         with open(f"misc/{filename}", "r", encoding="utf-8") as f:
+#             return f.read().strip()
+#     except FileNotFoundError:
+#         return default_text
 
 
 global db
@@ -155,6 +169,16 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка в send_reminder: {str(e)}", exc_info=True)
+
+
+async def send_delayed_notification(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = context.job.data["user_id"]
+        message_text = context.job.data["message_text"]
+        await context.bot.send_message(chat_id=user_id, text=message_text)
+    except Exception as e:
+        logger.error(f"Ошибка отправки отложенного уведомления {user_id}: {str(e)}")
+
 
 # Обработчики команд
 async def check_admin_access(update: Update) -> bool:
@@ -530,11 +554,22 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     username = query.data.split("_")[1]
     event_id = context.user_data["current_event_id"]
-
     user_id = db.get_user_id_by_username(username)
 
     if user_id:
         db.delete_registration(user_id, event_id)
+
+        try:
+            with open("misc/user_banned.txt", "r", encoding="utf-8") as f:
+                message_text = f.read().strip()
+        except FileNotFoundError:
+            message_text = "Тебя удалили"
+
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message_text)
+        except Exception as e:
+            logger.error(f"Не удалось отправить {user_id}: {str(e)}")
+
         await query.edit_message_text(f"✅ Участник @{username} удален!")
     else:
         await query.edit_message_text("❌ Пользователь не найден")
@@ -571,6 +606,84 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         context.user_data.clear()
         return ConversationHandler.END
+
+
+@error_logger
+async def perform_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data = context.user_data
+    user_id = update.effective_user.id
+
+    try:
+        # Получаем параметры из user_data
+        start_date = user_data.get('export_start')
+        end_date = user_data.get('export_end')
+
+        # Логирование параметров для отладки
+        logger.info(
+            f"Export request from {user_id}. "
+            f"Params: start={start_date}, end={end_date}"
+        )
+
+        # Валидация дат
+        if start_date and end_date:
+            try:
+                # Преобразуем в datetime для сравнения
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+                if start_dt > end_dt:
+                    await update.message.reply_text("❌ Начальная дата не может быть позже конечной!")
+                    return
+            except ValueError:
+                await update.message.reply_text("⚠️ Некорректный формат даты в параметрах")
+                return
+
+        # Генерация файла
+        buffer = None
+        try:
+            buffer = generate_export_file(
+                db.conn,
+                start_date=start_date,
+                end_date=end_date
+            )
+
+            # Формируем имя файла
+            filename = "events_export.xlsx"
+            if start_date or end_date:
+                filename = f"events_{start_date or 'start'}_to_{end_date or 'now'}.xlsx"
+
+            # Отправка файла
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=InputFile(buffer, filename=filename),
+                caption=f"📊 Экспорт мероприятий ({start_date or 'все'} - {end_date or 'сегодня'})"
+            )
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error during export: {str(e)}")
+            await update.message.reply_text("❌ Ошибка базы данных при формировании отчета")
+
+        except Exception as e:
+            logger.error(f"General export error: {str(e)}", exc_info=True)
+            await update.message.reply_text("❌ Не удалось сформировать файл")
+
+        finally:
+            # Гарантированное закрытие буфера
+            if buffer:
+                buffer.close()
+
+    except Exception as e:
+        logger.error(f"Critical error in perform_export: {str(e)}", exc_info=True)
+        await update.message.reply_text("🔥 Критическая ошибка при выполнении экспорта")
+
+    finally:
+        keys_to_remove = ['export_start', 'export_end']
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
+        context.user_data.clear()
+
+    return ConversationHandler.END
 
 
 @error_logger
@@ -658,7 +771,7 @@ async def create_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["end_date"],
             datetime.strptime(event_time, "%H:%M").time()
         )
-        reminder_time = event_datetime - timedelta(hours=3)
+        reminder_time = event_datetime - timedelta(hours=hours_to_remind)
 
         if reminder_time > datetime.now():
             delta = (reminder_time - datetime.now()).total_seconds()
@@ -703,7 +816,6 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_admin_access(update):
             return
 
-        # Очистка устаревших состояний
         context.user_data.clear()
         
         events = db.get_all_events()
@@ -742,6 +854,95 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @error_logger
+async def start_export_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    # Явный сброс всех данных экспорта
+    keys_to_remove = ['export_start', 'export_end']
+    for key in keys_to_remove:
+        if key in context.user_data:
+            del context.user_data[key]
+
+    # Очистка предыдущих данных
+    context.user_data.clear()
+    keyboard = [
+        [InlineKeyboardButton("Весь период", callback_data="all")],
+        [InlineKeyboardButton("Указать даты", callback_data="custom")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        "📅 Выберите период для экспорта:",
+        reply_markup=reply_markup
+    )
+    return EXPORT_CHOICE
+
+
+@error_logger
+async def handle_export_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    choice = query.data
+    if choice == "all":
+        context.user_data['export_start'] = None
+        context.user_data['export_end'] = None
+        return await perform_export(update, context)
+    elif choice == "custom":
+        await query.edit_message_text("📆 Введите начальную дату (ГГГГ-ММ-ДД) или /skip:")
+        return EXPORT_START_DATE
+
+
+@error_logger
+async def process_start_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    if text.lower() == "/skip":
+        context.user_data['export_start'] = None
+        await update.message.reply_text("⏩ Начальная дата не указана. Экспорт с самого начала.")
+        return await process_end_date(update, context)
+    else:
+        try:
+            datetime.strptime(text + " 00:00", "%Y-%m-%d %H:%M")
+            context.user_data['export_start'] = text
+            await update.message.reply_text("📆 Введите конечную дату (ГГГГ-ММ-ДД) или /skip:")
+            return EXPORT_END_DATE
+        except ValueError:
+            if 'export_start' in context.user_data:
+                del context.user_data['export_start']
+            await update.message.reply_text("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
+            return EXPORT_START_DATE
+
+
+@error_logger
+async def process_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    if text.lower() == "/skip":
+        context.user_data['export_end'] = None
+        await update.message.reply_text("⏩ Конечная дата не указана. Экспорт до текущего момента.")
+    else:
+        try:
+            datetime.strptime(text, "%Y-%m-%d")
+            context.user_data['export_end'] = text
+        except ValueError:
+            if 'export_end' in context.user_data:
+                del context.user_data['export_end']
+            await update.message.reply_text("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
+            return EXPORT_END_DATE
+
+    return await perform_export(update, context)
+
+
+@error_logger
+async def cancel_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("🚫 Экспорт отменён")
+    return ConversationHandler.END
+
+
+@error_logger
 async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = update.effective_user.id
@@ -763,10 +964,8 @@ async def my_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 info_display = info[:20] + "..." if len(info) > 20 else info
 
                 formatted_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-                
-                # Кнопка с информацией о мероприятии
+
                 btn_text = f"{formatted_date} {event_time} | {info_display}"
-                # Кнопка для отмены регистрации
                 keyboard.append([
                     InlineKeyboardButton(btn_text, callback_data=f"detail_{event_id}"),
                     InlineKeyboardButton("❌", callback_data=f"cancel_{event_id}")
@@ -820,10 +1019,30 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
 
     event_id = int(query.data.split("_")[1])
-    db.delete_registration(update.effective_user.id, event_id)
+    user_id = update.effective_user.id
+    db.delete_registration(user_id, event_id)
+
+    # Формируем сообщение
+    try:
+        with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
+            message_text = f.read().strip()
+    except FileNotFoundError:
+        message_text = "Ты удалился"
+
+    # Планируем отправку через ...
+    context.job_queue.run_once(
+        callback=send_delayed_notification,
+        when=delay_to_send_notification,  # секунд
+        data={
+            "user_id": user_id,
+            "message_text": message_text
+        },
+        name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
+    )
+
     await query.edit_message_text("✅ Регистрация отменена!")
-    
     await my_events(update, context)
+
 
 
 @error_logger
@@ -980,7 +1199,7 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             end_date = datetime.strptime(event["end_date"], "%Y-%m-%d").date()
             event_time = datetime.strptime(event["event_time"], "%H:%M").time()
             event_datetime = datetime.combine(end_date, event_time)
-            reminder_time = event_datetime - timedelta(hours=3)
+            reminder_time = event_datetime - timedelta(hours=hours_to_remind)
 
             job_name = f"reminder_{event_id}"
             for job in context.job_queue.jobs():
@@ -1006,7 +1225,6 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     finally:
-        # Всегда вызываем admin_events для возврата в меню
         await admin_events(update, context)
         context.user_data.clear()
 
@@ -1095,6 +1313,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif command.startswith("sendmsg_"):
             await send_message_to_participants(update, context)
             return
+        elif command == "export_history":
+            if user_id in ADMIN_IDS:
+                await export_history(update, context)
+            else:
+                await query.edit_message_text("⛔ Доступ запрещен!")
         else:
             await query.edit_message_text("⚠️ Команда не распознана")
 
@@ -1106,7 +1329,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @error_logger
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Сброс persistence при критических ошибках
         await context.application.persistence.drop_user_data()
         await context.application.persistence.drop_chat_data()
         if update.message:
@@ -1125,6 +1347,25 @@ async def cancel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+@error_logger
+async def export_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        buffer = generate_export_file(db.conn)
+        await context.bot.send_document(
+            chat_id=query.from_user.id,
+            document=InputFile(buffer, filename="history_export.xlsx"),
+            caption="📊 Полный экспорт данных"
+        )
+        buffer.close()
+
+    except Exception as e:
+        logger.error(f"Ошибка экспорта: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Ошибка при выгрузке данных")
+
+
 async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
     try:
         db = database.Database(DATABASE_NAME)
@@ -1139,7 +1380,7 @@ async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
             end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
             event_time = datetime.strptime(event_time_str, "%H:%M").time()
             event_datetime = datetime.combine(end_date, event_time)
-            reminder_time = event_datetime - timedelta(hours=3)
+            reminder_time = event_datetime - timedelta(hours=hours_to_remind)
 
             # Создаем задачу если время актуально
             if reminder_time > datetime.now():
@@ -1169,10 +1410,6 @@ def main():
         .persistence(persistence)
         .build()
     )
-
-    # application.persistence.drop_user_data()
-    # application.persistence.drop_chat_data()
-    # logger.info("Состояния пользователей сброшены при запуске.")
 
     application.job_queue.run_once(
         callback=restore_reminders,
@@ -1300,6 +1537,28 @@ def main():
     )
     application.add_handler(remove_user_conv)
 
+    export_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(start_export_flow, pattern="^export_history$")
+        ],
+        states={
+            EXPORT_CHOICE: [
+                CallbackQueryHandler(handle_export_choice, pattern="^(all|custom)$")
+            ],
+            EXPORT_START_DATE: [
+                MessageHandler(filters.TEXT | filters.COMMAND, process_start_date)
+            ],
+            EXPORT_END_DATE: [
+                MessageHandler(filters.TEXT | filters.COMMAND, process_end_date)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel_export)],
+        map_to_parent={ConversationHandler.END: ConversationHandler.END},
+        persistent=True,
+        name="export_conv"
+    )
+    application.add_handler(export_conv)
+
     # Обработчики callback-запросов
     application.add_handler(CallbackQueryHandler(handle_unregistration, pattern=r"^(confirm_unreg_\d+|cancel_unreg)$"))
     application.add_handler(CallbackQueryHandler(event_button, pattern="^event_"))
@@ -1316,6 +1575,9 @@ def main():
     application.add_handler(CallbackQueryHandler(send_message_to_participants, pattern=r"^sendmsg_\d+$"))
     application.add_handler(CallbackQueryHandler(menu_handler))
     application.add_handler(CallbackQueryHandler(handle_back_button, pattern="^adminevents$"))
+    application.add_handler(
+        CallbackQueryHandler(export_history, pattern="^export_history$")
+    )
 
     # Запуск бота
     application.run_polling()
