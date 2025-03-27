@@ -41,11 +41,9 @@ def generate_export_file(
     if start_date == 'all' or end_date == 'all':
         start_date = end_date = None
     if start_date:
-        # where_clauses.append("e.created_at >= ?")
         where_clauses.append("datetime(e.end_date || ' ' || e.event_time) >= ?")
         params.append(start_date)
     if end_date:
-        # where_clauses.append("e.created_at <= ?")
         where_clauses.append("datetime(e.end_date || ' ' || e.event_time) <= ?")
         params.append(end_date)
 

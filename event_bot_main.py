@@ -612,49 +612,75 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @error_logger
 async def perform_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
+    user_id = update.effective_user.id
 
     try:
+        # Получаем параметры из user_data
         start_date = user_data.get('export_start')
         end_date = user_data.get('export_end')
 
+        # Логирование параметров для отладки
+        logger.info(
+            f"Export request from {user_id}. "
+            f"Params: start={start_date}, end={end_date}"
+        )
+
+        # Валидация дат
         if start_date and end_date:
-            # Преобразуем строки в datetime для сравнения
-            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
-            if start_dt > end_dt:
-                await update.message.reply_text("❌ Начальная дата не может быть позже конечной!")
-                context.user_data.clear()
-                return ConversationHandler.END
+            try:
+                # Преобразуем в datetime для сравнения
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
-        logger.info(f"Export params: start={start_date}, end={end_date}")
-
-        period_text = ""
-        if not start_date and not end_date:
-            period_text = "Весь период"
-        else:
-            period_text = f"{start_date or 'Начало'} – {end_date or 'Сейчас'}"
+                if start_dt > end_dt:
+                    await update.message.reply_text("❌ Начальная дата не может быть позже конечной!")
+                    return
+            except ValueError:
+                await update.message.reply_text("⚠️ Некорректный формат даты в параметрах")
+                return
 
         # Генерация файла
-        buffer = generate_export_file(
-            db.conn,
-            start_date=start_date,
-            end_date=end_date
-        )
+        buffer = None
+        try:
+            buffer = generate_export_file(
+                db.conn,
+                start_date=start_date,
+                end_date=end_date
+            )
 
-        # Отправка файла
-        await context.bot.send_document(
-            chat_id=update.effective_user.id,
-            document=InputFile(buffer, filename="history_export.xlsx"),
-            caption=f"📊 Экспорт данных ({period_text})"
-        )
-        buffer.close()
+            # Формируем имя файла
+            filename = "events_export.xlsx"
+            if start_date or end_date:
+                filename = f"events_{start_date or 'start'}_to_{end_date or 'now'}.xlsx"
+
+            # Отправка файла
+            await context.bot.send_document(
+                chat_id=user_id,
+                document=InputFile(buffer, filename=filename),
+                caption=f"📊 Экспорт мероприятий ({start_date or 'все'} - {end_date or 'сегодня'})"
+            )
+
+        except sqlite3.Error as e:
+            logger.error(f"Database error during export: {str(e)}")
+            await update.message.reply_text("❌ Ошибка базы данных при формировании отчета")
+
+        except Exception as e:
+            logger.error(f"General export error: {str(e)}", exc_info=True)
+            await update.message.reply_text("❌ Не удалось сформировать файл")
+
+        finally:
+            # Гарантированное закрытие буфера
+            if buffer:
+                buffer.close()
 
     except Exception as e:
-        logger.error(f"Export error: {str(e)}", exc_info=True)
-        await update.message.reply_text("❌ Не удалось сформировать отчёт")
+        logger.error(f"Critical error in perform_export: {str(e)}", exc_info=True)
+        await update.message.reply_text("🔥 Критическая ошибка при выполнении экспорта")
 
-    # Гарантированный сброс данных
-    context.user_data.clear()
+    finally:
+        # Всегда очищаем user_data
+        context.user_data.clear()
+
     return ConversationHandler.END
 
 
@@ -892,13 +918,13 @@ async def process_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏩ Конечная дата не указана. Экспорт до текущего момента.")
     else:
         try:
-            # datetime.strptime(text, "%Y-%m-%d")
-            datetime.strptime(text + " 00:00", "%Y-%m-%d %H:%M")
+            datetime.strptime(text, "%Y-%m-%d")
             context.user_data['export_end'] = text
         except ValueError:
             await update.message.reply_text("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
             return EXPORT_END_DATE
 
+    # Явный вызов экспорта
     return await perform_export(update, context)
 
 
