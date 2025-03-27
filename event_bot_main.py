@@ -559,7 +559,6 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user_id:
         db.delete_registration(user_id, event_id)
 
-        # Сообщение при удалении админом
         try:
             with open("misc/user_banned.txt", "r", encoding="utf-8") as f:
                 message_text = f.read().strip()
@@ -678,7 +677,10 @@ async def perform_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔥 Критическая ошибка при выполнении экспорта")
 
     finally:
-        # Всегда очищаем user_data
+        keys_to_remove = ['export_start', 'export_end']
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
         context.user_data.clear()
 
     return ConversationHandler.END
@@ -814,7 +816,6 @@ async def admin_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await check_admin_access(update):
             return
 
-        # Очистка устаревших состояний
         context.user_data.clear()
         
         events = db.get_all_events()
@@ -857,9 +858,14 @@ async def start_export_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    # Явный сброс всех данных экспорта
+    keys_to_remove = ['export_start', 'export_end']
+    for key in keys_to_remove:
+        if key in context.user_data:
+            del context.user_data[key]
+
     # Очистка предыдущих данных
     context.user_data.clear()
-
     keyboard = [
         [InlineKeyboardButton("Весь период", callback_data="all")],
         [InlineKeyboardButton("Указать даты", callback_data="custom")]
@@ -880,7 +886,6 @@ async def handle_export_choice(update: Update, context: ContextTypes.DEFAULT_TYP
 
     choice = query.data
     if choice == "all":
-        # Явная установка None, даже если ранее были данные
         context.user_data['export_start'] = None
         context.user_data['export_end'] = None
         return await perform_export(update, context)
@@ -896,15 +901,16 @@ async def process_start_date(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text.lower() == "/skip":
         context.user_data['export_start'] = None
         await update.message.reply_text("⏩ Начальная дата не указана. Экспорт с самого начала.")
-        return await process_end_date(update, context)  # Переход сразу к конечной дате
+        return await process_end_date(update, context)
     else:
         try:
-            # datetime.strptime(text, "%Y-%m-%d")
             datetime.strptime(text + " 00:00", "%Y-%m-%d %H:%M")
             context.user_data['export_start'] = text
             await update.message.reply_text("📆 Введите конечную дату (ГГГГ-ММ-ДД) или /skip:")
             return EXPORT_END_DATE
         except ValueError:
+            if 'export_start' in context.user_data:
+                del context.user_data['export_start']
             await update.message.reply_text("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
             return EXPORT_START_DATE
 
@@ -921,10 +927,11 @@ async def process_end_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
             datetime.strptime(text, "%Y-%m-%d")
             context.user_data['export_end'] = text
         except ValueError:
+            if 'export_end' in context.user_data:
+                del context.user_data['export_end']
             await update.message.reply_text("❌ Неверный формат! Используйте ГГГГ-ММ-ДД")
             return EXPORT_END_DATE
 
-    # Явный вызов экспорта
     return await perform_export(update, context)
 
 
@@ -1218,7 +1225,6 @@ async def edit_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     finally:
-        # Всегда вызываем admin_events для возврата в меню
         await admin_events(update, context)
         context.user_data.clear()
 
@@ -1323,7 +1329,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @error_logger
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        # Сброс persistence при критических ошибках
         await context.application.persistence.drop_user_data()
         await context.application.persistence.drop_chat_data()
         if update.message:
@@ -1405,10 +1410,6 @@ def main():
         .persistence(persistence)
         .build()
     )
-
-    # application.persistence.drop_user_data()
-    # application.persistence.drop_chat_data()
-    # logger.info("Состояния пользователей сброшены при запуске.")
 
     application.job_queue.run_once(
         callback=restore_reminders,
@@ -1545,10 +1546,10 @@ def main():
                 CallbackQueryHandler(handle_export_choice, pattern="^(all|custom)$")
             ],
             EXPORT_START_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_start_date)
+                MessageHandler(filters.TEXT | filters.COMMAND, process_start_date)
             ],
             EXPORT_END_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_end_date)
+                MessageHandler(filters.TEXT | filters.COMMAND, process_end_date)
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel_export)],
