@@ -590,6 +590,8 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         event = db.get_event_by_id(event_id)
         participants = db.get_event_participant_ids(event_id)
+        event_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
+        event_time = event['event_time']
 
         db.delete_event(event_id)
         
@@ -603,7 +605,15 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             with open("misc/event_deleted.txt", "r", encoding="utf-8") as f:
                 template = f.read().strip()
         except FileNotFoundError:
-            template = "Мероприятие отменено!"
+            template = (
+                "❌ Мероприятие отменено!\n"
+                "Дата: {event_date}\n"
+                "Время: {event_time}"
+            )
+        message_text = template.format(
+        event_date=event_date,
+        event_time=event_time
+    )
 
         success, failed = 0, 0
         for user_id in participants:
