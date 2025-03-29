@@ -588,6 +588,9 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        event = db.get_event_by_id(event_id)
+        participants = db.get_event_participant_ids(event_id)
+
         db.delete_event(event_id)
         
         # Удаление всех связанных jobs
@@ -596,8 +599,26 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if job.name == job_name:
                 job.schedule_removal()
         
-        logger.info(f"Мероприятие {event_id} удалено. Jobs очищены.")
-        await query.edit_message_text("✅ Мероприятие удалено!")
+        try:
+            with open("misc/event_deleted.txt", "r", encoding="utf-8") as f:
+                template = f.read().strip()
+        except FileNotFoundError:
+            template = "Мероприятие отменено!"
+
+        success, failed = 0, 0
+        for user_id in participants:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text
+                )
+                success += 1
+            except Exception as e:
+                logger.error(f"Ошибка отправки {user_id}: {str(e)}")
+                failed += 1
+        
+        logger.info(f"Мероприятие {event_id} удалено. Jobs очищены. Уведомлено участников {success}/{failed}!")
+        await query.edit_message_text("✅ Мероприятие удалено!\nУведомлено участников {success}/{failed}!\n")
 
     except Exception as e:
         logger.error(f"Ошибка удаления мероприятия {event_id}: {str(e)}")
@@ -1022,23 +1043,23 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     db.delete_registration(user_id, event_id)
 
-    # Формируем сообщение
-    try:
-        with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
-            message_text = f.read().strip()
-    except FileNotFoundError:
-        message_text = "Ты удалился"
+    # # Формируем сообщение
+    # try:
+    #     with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
+    #         message_text = f.read().strip()
+    # except FileNotFoundError:
+    #     message_text = "Ты удалился"
 
-    # Планируем отправку через ...
-    context.job_queue.run_once(
-        callback=send_delayed_notification,
-        when=delay_to_send_notification,  # секунд
-        data={
-            "user_id": user_id,
-            "message_text": message_text
-        },
-        name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
-    )
+    # # Планируем отправку через ...
+    # context.job_queue.run_once(
+    #     callback=send_delayed_notification,
+    #     when=delay_to_send_notification,  # секунд
+    #     data={
+    #         "user_id": user_id,
+    #         "message_text": message_text
+    #     },
+    #     name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
+    # )
 
     await query.edit_message_text("✅ Регистрация отменена!")
     await my_events(update, context)
