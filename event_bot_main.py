@@ -628,7 +628,7 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 failed += 1
         
         logger.info(f"Мероприятие {event_id} удалено. Jobs очищены. Уведомлено участников {success}/{failed}!")
-        await query.edit_message_text("✅ Мероприятие удалено!\nУведомлено участников {success}/{failed}!\n")
+        await query.edit_message_text(f"✅ Мероприятие удалено!\nУведомлено участников {success}/{failed}!\n")
 
     except Exception as e:
         logger.error(f"Ошибка удаления мероприятия {event_id}: {str(e)}")
