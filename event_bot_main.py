@@ -28,15 +28,16 @@ logging.basicConfig(
     handlers=[
         ilg.TimestampedRotatingFileHandler(
             "bot.log",
-            maxBytes=5*1024*1024,  # 5 MB
+            maxBytes=5*1024*1024,
             backupCount=20,
-            # encoding="utf-8"
+            encoding="utf-8"  # Явно указываем кодировку
         ),
         logging.StreamHandler()
     ]
 )
 
 logger = logging.getLogger(__name__)
+# logger.addHandler(logging.StreamHandler())
 
 config = configparser.ConfigParser()
 config.read('bot_config.ini', encoding='utf-8')
@@ -1053,23 +1054,28 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     db.delete_registration(user_id, event_id)
 
-    # # Формируем сообщение
-    # try:
-    #     with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
-    #         message_text = f.read().strip()
-    # except FileNotFoundError:
-    #     message_text = "Ты удалился"
+    # Формируем сообщение
+    try:
+        with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
+            template = f.read().strip()
+    except FileNotFoundError:
+        template = "Вы отменили свою запись"
 
-    # # Планируем отправку через ...
-    # context.job_queue.run_once(
-    #     callback=send_delayed_notification,
-    #     when=delay_to_send_notification,  # секунд
-    #     data={
-    #         "user_id": user_id,
-    #         "message_text": message_text
-    #     },
-    #     name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
-    # )
+        message_text = template.format(
+        # event_date=event_date,
+        # event_time=event_time
+    )
+
+    # Планируем отправку через ...
+    context.job_queue.run_once(
+        callback=send_delayed_notification,
+        when=delay_to_send_notification,  # секунд
+        data={
+            "user_id": user_id,
+            "message_text": message_text
+        },
+        name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
+    )
 
     await query.edit_message_text("✅ Регистрация отменена!")
     await my_events(update, context)
