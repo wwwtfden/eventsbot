@@ -6,40 +6,51 @@ from datetime import datetime
 class TimestampedRotatingFileHandler(RotatingFileHandler):
     def __init__(self, filename, maxBytes=5*1024*1024, backupCount=20, encoding='utf-8'):
         os.makedirs("logs", exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename_with_timestamp = os.path.join("logs", f"{filename}.{timestamp}.log")
+        self.base_filename = filename
+        self._update_filename()
         super().__init__(
-            filename=filename_with_timestamp,
+            filename=self.filename,
             maxBytes=maxBytes,
             backupCount=backupCount,
-            encoding=encoding  # Явно указываем кодировку
+            encoding=encoding,
+            delay=False
         )
-        self.namer = self.rotate_namer
+        self.namer = self._namer
+        self.rotator = self._rotator
+
+    def _clean_old_files(self):
+        files = sorted(
+            [os.path.join("logs", f) for f in os.listdir("logs") if f.startswith("bot.log")],
+            key=lambda x: os.path.getctime(x)
+        )
+        while len(files) > self.backupCount:
+            oldest_file = files.pop(0)
+            os.remove(oldest_file)
 
     def rotate_namer(self, name):
         # Убираем временную метку из имени при ротации
         return name.replace(".log", "") + ".log"
-
-    def _clean_old_files(self):
-        files = sorted(
-            [f for f in os.listdir("logs") if f.startswith(os.path.basename(self.baseFilename))],
-            key=lambda x: os.path.getctime(os.path.join("logs", x))
-        )
-        while len(files) > self.backupCount:
-            oldest_file = files.pop(0)
-            os.remove(os.path.join("logs", oldest_file))
         
     def doRollover(self):
         # вызывается при превышении maxBytes
         super().doRollover()
         self._clean_old_files()
 
-    # def _clean_old_files(self):
-    #     # удаление файлов превышающих backupCount
-    #     files = sorted(
-    #         [f for f in os.listdir() if f.startswith(self.baseFilename)],
-    #         key=lambda x: os.path.getctime(x)
-    #     )
-    #     while len(files) > self.backupCount:
-    #         oldest_file = files.pop(0)
-    #         os.remove(oldest_file)
+    def _update_filename(self):
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        self.filename = os.path.join("logs", f"{self.base_filename}.{timestamp}.log")
+
+    def _namer(self, name):
+        return name.replace(".log", "") + ".log"
+
+    def _rotator(self, source, dest):
+        os.rename(source, dest)
+
+    def doRollover(self):
+        self._update_filename()
+        super().doRollover()
+
+    def emit(self, record):
+        self._update_filename()
+        super().emit(record)
+        self.flush()

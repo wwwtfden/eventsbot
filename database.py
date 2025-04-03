@@ -101,10 +101,10 @@ class Database:
     def get_event_participants(self, event_id):
         cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT username FROM registrations
+            SELECT user_id, username FROM registrations
             WHERE event_id = ?
         ''', (event_id,))
-        return [row[0] for row in cursor.fetchall()]
+        return cursor.fetchall()
 
     def get_event_participant_ids(self, event_id):
         cursor = self.conn.cursor()
@@ -146,10 +146,18 @@ class Database:
         finally:
             cursor.close()
 
+    # def delete_registration(self, user_id, event_id):
+    #     cursor = self.conn.cursor()
+    #     cursor.execute('''
+    #         DELETE FROM registrations
+    #         WHERE user_id = ? AND event_id = ?
+    #     ''', (user_id, event_id))
+    #     self.conn.commit()
+    #     return cursor.rowcount
     def delete_registration(self, user_id, event_id):
         cursor = self.conn.cursor()
         cursor.execute('''
-            DELETE FROM registrations
+            DELETE FROM registrations 
             WHERE user_id = ? AND event_id = ?
         ''', (user_id, event_id))
         self.conn.commit()
@@ -178,8 +186,9 @@ class Database:
                 e.event_time,
                 e.info,
                 COUNT(r.user_id) as current_participants
-            FROM events e
-            LEFT JOIN registrations r ON e.id = r.event_id
+            FROM events AS e
+            LEFT JOIN registrations AS r 
+                ON e.id = r.event_id
             WHERE e.id = ?
             GROUP BY e.id
         ''', (event_id,))
@@ -191,7 +200,7 @@ class Database:
                 'max_participants': result[1],
                 'end_date': result[2],
                 'event_time': result[3],
-                'info': result[4],
+                'info': result[4],  # Теперь ключ 'info' гарантированно есть
                 'current_participants': result[5]
             }
         return None
@@ -199,5 +208,23 @@ class Database:
     def get_user_id_by_username(self, username):
         cursor = self.conn.cursor()
         cursor.execute("SELECT user_id FROM registrations WHERE username = ?", (username,))
+        result = cursor.fetchone()
+        return result[0] if result else None
+
+    def is_user_registered(self, user_id: int, event_id: int) -> bool:
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT 1 FROM registrations 
+            WHERE user_id = ? AND event_id = ?
+        ''', (user_id, event_id))
+        return cursor.fetchone() is not None
+
+    def get_username_by_user_id(self, user_id: int) -> str:
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT username FROM registrations 
+            WHERE user_id = ? 
+            LIMIT 1
+        ''', (user_id,))
         result = cursor.fetchone()
         return result[0] if result else None

@@ -37,7 +37,8 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-# logger.addHandler(logging.StreamHandler())
+logger.addHandler(logging.StreamHandler())
+logger.handlers[0].flush()
 
 config = configparser.ConfigParser()
 config.read('bot_config.ini', encoding='utf-8')
@@ -194,8 +195,12 @@ async def check_admin_access(update: Update) -> bool:
 @error_logger
 async def reset_persistence(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(update.effective_user.id):
-        await context.application.persistence.drop_user_data()
-        await context.application.persistence.drop_chat_data()
+        user_id = update.effective_user.id  # ID пользователя
+        chat_id = update.effective_chat.id  # ID чата
+
+        await context.application.persistence.drop_user_data(user_id=user_id)
+        await context.application.persistence.drop_chat_data(chat_id=chat_id)
+
         await update.message.reply_text("♻️ Все данные persistence сброшены")
 
 
@@ -348,7 +353,14 @@ async def admin_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         participants = db.get_event_participants(event_id)
         if participants:
-            message_text += "\n".join([f"• @{username}" for username in participants])
+            user_links = []
+            for user_id, username in participants:
+                if username:
+                    user_links.append(f"• [@{username}](tg://user?id={user_id})")
+                else:
+                    user_links.append(f"• [User #{user_id}](tg://user?id={user_id})")
+
+            message_text += "\n".join(user_links)
         else:
             message_text += "Нет участников"
 
@@ -437,38 +449,112 @@ async def send_link_to_participants(update: Update, context: ContextTypes.DEFAUL
     return WAITING_FOR_LINK
 
 
+# @error_logger
+# async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     query = update.callback_query
+#     await query.answer()
+#
+#     event_id = context.user_data.get('sendlink_event_id')
+#     participants = db.get_event_participant_ids(event_id)
+#
+#     participants = [uid for uid in participants if uid not in ADMIN_IDS]
+#
+#     message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
+#         link=context.user_data.get('link', '')
+#     )
+#
+#     success, failed = 0, 0
+#     for user_id in participants:
+#         try:
+#             await context.bot.send_message(
+#                 chat_id=user_id,
+#                 text=message_text,
+#                 disable_web_page_preview=False
+#             )
+#             success += 1
+#         except Exception as e:
+#             logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
+#             failed += 1
+#
+#     await query.edit_message_text(
+#         f"✅ Сообщение отправлено {success} участникам.\n"
+#         f"❌ Не удалось отправить: {failed}"
+#     )
+#     return ConversationHandler.END
+
 @error_logger
 async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    event_id = context.user_data.get('sendlink_event_id')
-    participants = db.get_event_participant_ids(event_id)
+    try:
+        event_id = context.user_data.get('sendlink_event_id')
+        if not event_id:
+            await query.edit_message_text("❌ Ошибка: мероприятие не найдено")
+            return ConversationHandler.END
 
-    participants = [uid for uid in participants if uid not in ADMIN_IDS]
+        current_user_id = update.effective_user.id
+        participants = db.get_event_participant_ids(event_id)
+        # participants = [uid for uid in participants if uid not in ADMIN_IDS]
+        participants = [
+            uid for uid in participants
+            if uid != current_user_id
+        ]
 
-    message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
-        link=context.user_data.get('link', '')
-    )
+        message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
+            link=context.user_data.get('link', '')
+        )
 
-    success, failed = 0, 0
-    for user_id in participants:
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=message_text,
-                disable_web_page_preview=False
+        success = []  # ID успешных отправок
+        failed = []  # ID неудачных отправок
+
+        # Отправка сообщения всем участникам
+        for user_id in participants:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    disable_web_page_preview=False
+                )
+                success.append(user_id)
+            except Exception as e:
+                logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
+                failed.append(user_id)
+
+        # Формируем детальный отчет
+        report = [
+            f"📊 Итоги отправки:",
+            f"✅ Успешно: {len(success)}",
+            f"❌ Не удалось: {len(failed)}"
+        ]
+
+        # Добавляем список проблемных ID при наличии
+        if failed:
+            failed_ids = "\n".join([str(uid) for uid in failed])
+            report.append(f"\nСписок ID с ошибками:\n{failed_ids}")
+
+        # Добавляем предупреждение о возможных причинах
+        if failed:
+            report.append(
+                "\n⚠️ Возможные причины: "
+                "пользователь заблокировал бота или не начинал с ним диалог"
             )
-            success += 1
-        except Exception as e:
-            logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
-            failed += 1
 
-    await query.edit_message_text(
-        f"✅ Сообщение отправлено {success} участникам.\n"
-        f"❌ Не удалось отправить: {failed}"
-    )
-    return ConversationHandler.END
+        # Отправляем полный отчет администратору
+        await query.edit_message_text("\n".join(report))
+
+        # Очистка временных данных
+        keys_to_remove = ['sendlink_event_id', 'link', 'generated_message']
+        for key in keys_to_remove:
+            if key in context.user_data:
+                del context.user_data[key]
+
+        return ConversationHandler.END
+
+    except Exception as e:
+        logger.error(f"Критическая ошибка в confirm_link_sending: {str(e)}", exc_info=True)
+        await query.edit_message_text("🔥 Критическая ошибка при отправке")
+        return ConversationHandler.END
 
 
 @error_logger
@@ -498,27 +584,63 @@ async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return CONFIRM_LINK
 
 
+# @error_logger
+# async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#     message_text = update.message.text
+#     event_id = context.user_data.get('sendmsg_event_id')
+#     participant_ids = db.get_event_participant_ids(event_id)
+#
+#     participant_ids = [uid for uid in participant_ids if uid not in ADMIN_IDS]
+#
+#     success, failed = 0, 0
+#     for user_id in participant_ids:
+#         try:
+#             await context.bot.send_message(chat_id=user_id, text=message_text)
+#             success += 1
+#         except Exception as e:
+#             logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
+#             failed += 1
+#
+#     await update.message.reply_text(
+#         f"✅ Сообщение отправлено {success} участникам.\n"
+#         f"❌ Не удалось отправить: {failed}"
+#     )
+#     context.user_data.clear()
+#     return ConversationHandler.END
 @error_logger
 async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     event_id = context.user_data.get('sendmsg_event_id')
     participant_ids = db.get_event_participant_ids(event_id)
 
-    participant_ids = [uid for uid in participant_ids if uid not in ADMIN_IDS]
+    # participant_ids = [uid for uid in participant_ids if uid not in ADMIN_IDS]
+    current_user_id = update.effective_user.id
+    participant_ids = [
+        uid for uid in participant_ids
+        if uid != current_user_id
+    ]
 
-    success, failed = 0, 0
+    success, failed = [], []
     for user_id in participant_ids:
         try:
             await context.bot.send_message(chat_id=user_id, text=message_text)
-            success += 1
+            success.append(user_id)
         except Exception as e:
             logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
-            failed += 1
+            failed.append(user_id)
 
-    await update.message.reply_text(
-        f"✅ Сообщение отправлено {success} участникам.\n"
-        f"❌ Не удалось отправить: {failed}"
+    # Сохраняем информацию о неудачных попытках
+    context.user_data['failed_users'] = failed
+
+    # Формируем сообщение с деталями
+    report = (
+        f"✅ Отправлено: {len(success)}\n"
+        f"❌ Не удалось: {len(failed)}\n"
     )
+    if failed:
+        report += "\nСписок ID с ошибками:\n" + "\n".join(map(str, failed))
+
+    await update.message.reply_text(report)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -531,20 +653,26 @@ async def remove_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     event_id = int(query.data.split("_")[1])
     context.user_data["current_event_id"] = event_id
 
+    # Получаем список участников в формате (user_id, username)
     participants = db.get_event_participants(event_id)
 
     if not participants:
         await query.edit_message_text("❌ В этом мероприятии нет участников")
         return ConversationHandler.END
 
+    # Создаем кнопки с user_id в callback_data
     keyboard = [
-        [InlineKeyboardButton(f"@{username}", callback_data=f"remove_{username}")]
-        for username in participants
+        [
+            InlineKeyboardButton(
+                f"@{username}" if username else f"UserID: {user_id}",
+                callback_data=f"remove_{user_id}"  # Передаем user_id вместо username
+            )
+        ]
+        for (user_id, username) in participants
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "Выберите участника для удаления:", reply_markup=reply_markup)
 
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text("Выберите участника для удаления:", reply_markup=reply_markup)
     return REMOVE_USER_SELECT
 
 
@@ -553,29 +681,36 @@ async def remove_user_finish(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
 
-    username = query.data.split("_")[1]
-    event_id = context.user_data["current_event_id"]
-    user_id = db.get_user_id_by_username(username)
+    try:
+        user_id = int(query.data.split("_")[1])
+        event_id = context.user_data["current_event_id"]
 
-    if user_id:
+        # Проверяем существование записи
+        if not db.is_user_registered(user_id, event_id):
+            await query.edit_message_text("❌ Пользователь не зарегистрирован на это мероприятие")
+            return ConversationHandler.END
+
+        # Удаляем регистрацию
         db.delete_registration(user_id, event_id)
 
+        # Получаем текущий username для логов
+        username = db.get_username_by_user_id(user_id) or f"UserID: {user_id}"
+
+        # Отправляем уведомление (если возможно)
         try:
             with open("misc/user_banned.txt", "r", encoding="utf-8") as f:
                 message_text = f.read().strip()
-        except FileNotFoundError:
-            message_text = "Тебя удалили"
-
-        try:
             await context.bot.send_message(chat_id=user_id, text=message_text)
         except Exception as e:
-            logger.error(f"Не удалось отправить {user_id}: {str(e)}")
+            logger.error(f"Не удалось отправить сообщение {user_id}: {str(e)}")
 
         await query.edit_message_text(f"✅ Участник @{username} удален!")
-    else:
-        await query.edit_message_text("❌ Пользователь не найден")
+        return ConversationHandler.END
 
-    return ConversationHandler.END
+    except Exception as e:
+        logger.error(f"Ошибка удаления: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Внутренняя ошибка")
+        return ConversationHandler.END
 
 
 @error_logger
@@ -1050,36 +1185,57 @@ async def cancel_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
 
-    event_id = int(query.data.split("_")[1])
-    user_id = update.effective_user.id
-    db.delete_registration(user_id, event_id)
-
-    # Формируем сообщение
     try:
-        with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
-            template = f.read().strip()
-    except FileNotFoundError:
-        template = "Вы отменили свою запись"
+        # event_id = int(query.data.split("_")[1])
+        event_id = int(query.data.split("_")[1])
+        user_id = update.effective_user.id
+
+        # Удаление регистрации с проверкой
+        deleted_count = db.delete_registration(user_id, event_id)
+        if deleted_count == 0:
+            await query.edit_message_text("❌ Регистрация не найдена!")
+            return
+
+        # Получение данных о мероприятии
+        event = db.get_event_by_id(event_id)
+        if not event:
+            await query.edit_message_text("❌ Мероприятие не найдено")
+            return
+
+        # Форматирование даты и времени
+        event_date = datetime.strptime(event['end_date'], "%Y-%m-%d").strftime("%d.%m.%Y")
+        event_time = event['event_time']
+
+        # Формирование сообщения
+        try:
+            with open("misc/user_leaved.txt", "r", encoding="utf-8") as f:
+                template = f.read().strip()
+        except FileNotFoundError:
+            template = "❌ Вы отменили регистрацию на {event_date} в {event_time}"
 
         message_text = template.format(
-        # event_date=event_date,
-        # event_time=event_time
-    )
+            event_date=event_date,
+            event_time=event_time
+        )
 
-    # Планируем отправку через ...
-    context.job_queue.run_once(
-        callback=send_delayed_notification,
-        when=delay_to_send_notification,  # секунд
-        data={
-            "user_id": user_id,
-            "message_text": message_text
-        },
-        name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
-    )
+        # Отправка уведомления
+        context.job_queue.run_once(
+            callback=send_delayed_notification,
+            when=delay_to_send_notification,
+            data={"user_id": user_id, "message_text": message_text},
+            name=f"delayed_msg_{user_id}_{datetime.now().timestamp()}"
+        )
 
-    await query.edit_message_text("✅ Регистрация отменена!")
-    await my_events(update, context)
+        # Обновление интерфейса
+        await my_events(update, context)
+        await query.edit_message_text("✅ Регистрация отменена!")
 
+    except ValueError:
+        await query.edit_message_text("❌ Некорректный ID мероприятия")
+        return
+    except Exception as e:
+        logger.error(f"Ошибка отмены регистрации: {str(e)}", exc_info=True)
+        await query.edit_message_text("❌ Произошла ошибка")
 
 
 @error_logger
@@ -1366,15 +1522,26 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @error_logger
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        await context.application.persistence.drop_user_data()
-        await context.application.persistence.drop_chat_data()
-        if update.message:
-            await update.message.reply_text("❌ Произошла внутренняя ошибка")
-        elif update.callback_query:
-            await update.callback_query.message.reply_text("❌ Произошла внутренняя ошибка")
-    except Exception as e:
-        logger.error(f"Error in error handler: {str(e)}")
+        # Проверяем, что update не None
+        if update is not None:
+            user_id = update.effective_user.id if update.effective_user else None
+            chat_id = update.effective_chat.id if update.effective_chat else None
 
+            if user_id:
+                await context.application.persistence.drop_user_data(user_id=user_id)
+            if chat_id:
+                await context.application.persistence.drop_chat_data(chat_id=chat_id)
+        else:
+            logger.warning("Попытка сброса данных без контекста (update = None)")
+
+        # Отправка сообщения об ошибке (если есть контекст)
+        if update and update.message:
+            await update.message.reply_text("❌ Произошла внутренняя ошибка")
+        elif update and update.callback_query:
+            await update.callback_query.message.reply_text("❌ Произошла внутренняя ошибка")
+
+    except Exception as e:
+        logger.error(f"Ошибка в обработчике ошибок: {str(e)}", exc_info=True)
 
 @error_logger
 async def cancel_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1403,7 +1570,7 @@ async def export_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Ошибка при выгрузке данных")
 
 
-async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
+async def restore_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         db = database.Database(DATABASE_NAME)
         events = db.get_all_events()
@@ -1432,8 +1599,14 @@ async def restore_reminders(context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка восстановления: {str(e)}", exc_info=True)
-        await context.application.persistence.drop_user_data()
-        await context.application.persistence.drop_chat_data()
+
+        user_id = update.effective_user.id  # ID пользователя
+        chat_id = update.effective_chat.id  # ID чата
+
+        # Вызываем методы с указанием ID
+        await context.application.persistence.drop_user_data(user_id=user_id)
+        await context.application.persistence.drop_chat_data(chat_id=chat_id)
+
         logger.info("Полный сброс persistence после ошибки восстановления")
 
 
