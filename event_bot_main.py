@@ -1,4 +1,5 @@
 import os
+
 import database
 import logging
 from logging.handlers import RotatingFileHandler
@@ -18,6 +19,7 @@ from telegram.ext import (
 )
 import sqlite3
 from datetime import datetime, timedelta, time
+
 from export_handler import generate_export_file
 
 import improved_logger as ilg
@@ -88,7 +90,6 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     REMOVE_USER_START, REMOVE_USER_SELECT,
     EXPORT_CHOICE, EXPORT_START_DATE, EXPORT_END_DATE
 ) = range(15)
-
 
 def build_main_menu_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
     commands = ADMIN_COMMANDS if is_admin else USER_COMMANDS
@@ -482,6 +483,7 @@ async def send_link_to_participants(update: Update, context: ContextTypes.DEFAUL
 #     )
 #     return ConversationHandler.END
 
+
 @error_logger
 async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -494,22 +496,19 @@ async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYP
             return ConversationHandler.END
 
         current_user_id = update.effective_user.id
-        participants = db.get_event_participant_ids(event_id)
-        # participants = [uid for uid in participants if uid not in ADMIN_IDS]
-        participants = [
-            uid for uid in participants
-            if uid != current_user_id
-        ]
+        participants = db.get_event_participants(event_id)
+
+        success = []
+        failed = []
 
         message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
             link=context.user_data.get('link', '')
         )
 
-        success = []  # ID успешных отправок
-        failed = []  # ID неудачных отправок
+        for user_id, username in participants:
+            if user_id == current_user_id:
+                continue
 
-        # Отправка сообщения всем участникам
-        for user_id in participants:
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -519,36 +518,42 @@ async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYP
                 success.append(user_id)
             except Exception as e:
                 logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
-                failed.append(user_id)
+                db_username = db.get_username_by_user_id(user_id) or username
+                failed.append((user_id, db_username))
 
-        # Формируем детальный отчет
+        # Формируем отчет
         report = [
-            f"📊 Итоги отправки:",
+            f"📊 *Итоги отправки:*",
             f"✅ Успешно: {len(success)}",
             f"❌ Не удалось: {len(failed)}"
         ]
 
-        # Добавляем список проблемных ID при наличии
         if failed:
-            failed_ids = "\n".join([str(uid) for uid in failed])
-            report.append(f"\nСписок ID с ошибками:\n{failed_ids}")
+            # Экранируем и форматируем юзернеймы
+            failed_items = []
+            for uid, uname in failed:
+                if uname:
+                    # Экранируем спецсимволы и добавляем @
+                    safe_uname = uname.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[')
+                    failed_items.append(f"@{safe_uname}")
+                else:
+                    # Если нет username, показываем ID
+                    failed_items.append(f"ID: {uid}")
 
-        # Добавляем предупреждение о возможных причинах
-        if failed:
-            report.append(
-                "\n⚠️ Возможные причины: "
-                "пользователь заблокировал бота или не начинал с ним диалог"
-            )
+            report.extend([
+                "\n*Не удалось отправить:*",
+                "\n".join(failed_items),
+                "\n⚠️ *Возможные причины:*",
+                "• Пользователь заблокировал бота",
+                "• Не начинал диалог с ботом"
+            ])
 
-        # Отправляем полный отчет администратору
-        await query.edit_message_text("\n".join(report))
+        await query.edit_message_text(
+            "\n".join(report),
+            parse_mode="MarkdownV2"
+        )
 
-        # Очистка временных данных
-        keys_to_remove = ['sendlink_event_id', 'link', 'generated_message']
-        for key in keys_to_remove:
-            if key in context.user_data:
-                del context.user_data[key]
-
+        context.user_data.clear()
         return ConversationHandler.END
 
     except Exception as e:
@@ -607,40 +612,54 @@ async def process_link_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
 #     )
 #     context.user_data.clear()
 #     return ConversationHandler.END
+
+
 @error_logger
 async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text
     event_id = context.user_data.get('sendmsg_event_id')
-    participant_ids = db.get_event_participant_ids(event_id)
+    participants = db.get_event_participants(event_id)
 
-    # participant_ids = [uid for uid in participant_ids if uid not in ADMIN_IDS]
     current_user_id = update.effective_user.id
-    participant_ids = [
-        uid for uid in participant_ids
-        if uid != current_user_id
-    ]
+    failed = []
 
-    success, failed = [], []
-    for user_id in participant_ids:
+    for user_id, username in participants:
+        if user_id == current_user_id:
+            continue
+
         try:
             await context.bot.send_message(chat_id=user_id, text=message_text)
-            success.append(user_id)
         except Exception as e:
             logger.error(f"Ошибка отправки пользователю {user_id}: {e}")
-            failed.append(user_id)
+            db_username = db.get_username_by_user_id(user_id) or username
+            failed.append((user_id, db_username))
 
-    # Сохраняем информацию о неудачных попытках
-    context.user_data['failed_users'] = failed
+    # Формируем отчет
+    report = [
+        f"✅ *Отправлено:* {len(participants) - len(failed) - 1}",
+        f"❌ *Не удалось:* {len(failed)}"
+    ]
 
-    # Формируем сообщение с деталями
-    report = (
-        f"✅ Отправлено: {len(success)}\n"
-        f"❌ Не удалось: {len(failed)}\n"
-    )
     if failed:
-        report += "\nСписок ID с ошибками:\n" + "\n".join(map(str, failed))
+        # Форматируем список ошибок
+        failed_items = []
+        for uid, uname in failed:
+            if uname:
+                safe_uname = uname.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[')
+                failed_items.append(f"@{safe_uname}")
+            else:
+                failed_items.append(f"ID: {uid}")
 
-    await update.message.reply_text(report)
+        report.extend([
+            "\n*Не удалось отправить:*",
+            "\n".join(failed_items)
+        ])
+
+    await update.message.reply_text(
+        "\n".join(report),
+        parse_mode="MarkdownV2"
+    )
+
     context.user_data.clear()
     return ConversationHandler.END
 
