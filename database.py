@@ -81,6 +81,7 @@ class Database:
             LEFT JOIN registrations r ON e.id = r.event_id
             WHERE datetime(e.end_date || ' ' || e.event_time) > datetime('now', '-6 hours')
             GROUP BY e.id
+            ORDER BY e.end_date ASC, e.event_time ASC
         ''')
         return cursor.fetchall()
 
