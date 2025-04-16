@@ -450,40 +450,6 @@ async def send_link_to_participants(update: Update, context: ContextTypes.DEFAUL
     return WAITING_FOR_LINK
 
 
-# @error_logger
-# async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#     query = update.callback_query
-#     await query.answer()
-#
-#     event_id = context.user_data.get('sendlink_event_id')
-#     participants = db.get_event_participant_ids(event_id)
-#
-#     participants = [uid for uid in participants if uid not in ADMIN_IDS]
-#
-#     message_text = context.user_data.get('generated_message', "Ссылка: {link}").format(
-#         link=context.user_data.get('link', '')
-#     )
-#
-#     success, failed = 0, 0
-#     for user_id in participants:
-#         try:
-#             await context.bot.send_message(
-#                 chat_id=user_id,
-#                 text=message_text,
-#                 disable_web_page_preview=False
-#             )
-#             success += 1
-#         except Exception as e:
-#             logger.error(f"Ошибка отправки пользователю {user_id}: {str(e)}")
-#             failed += 1
-#
-#     await query.edit_message_text(
-#         f"✅ Сообщение отправлено {success} участникам.\n"
-#         f"❌ Не удалось отправить: {failed}"
-#     )
-#     return ConversationHandler.END
-
-
 @error_logger
 async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -506,8 +472,8 @@ async def confirm_link_sending(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
         for user_id, username in participants:
-            if user_id == current_user_id:
-                continue
+            # if user_id == current_user_id:
+            #     continue
 
             try:
                 await context.bot.send_message(
@@ -624,9 +590,8 @@ async def send_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     failed = []
 
     for user_id, username in participants:
-        if user_id == current_user_id:
-            continue
-
+        # if user_id == current_user_id:
+        #     continue
         try:
             await context.bot.send_message(chat_id=user_id, text=message_text)
         except Exception as e:
