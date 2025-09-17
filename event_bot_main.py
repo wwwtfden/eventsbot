@@ -5,6 +5,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 import configparser
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Chat, ChatMember, ChatMemberUpdated
+from telegram.ext import ChatMemberHandler
 from telegram import InputFile
 from telegram.ext import (
     Application,
@@ -324,6 +326,187 @@ async def handle_back_button(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     await admin_events(update, context)
+
+
+def extract_status_change(chat_member_update: ChatMemberUpdated):
+    """
+    Извлекает информацию об изменении статуса участника канала/группы.
+    Возвращает (was_member, is_member) или None если изменения нет.
+    """
+    if chat_member_update is None:
+        return None
+
+    status_change = chat_member_update.difference().get("status")
+    old_is_member, new_is_member = chat_member_update.difference().get("is_member", (None, None))
+
+    if status_change is None:
+        return None
+
+    old_status, new_status = status_change
+
+    # Проверяем, был ли пользователь участником
+    was_member = old_status in [
+        ChatMember.MEMBER,
+        ChatMember.OWNER,
+        ChatMember.ADMINISTRATOR,
+    ] or (old_status == ChatMember.RESTRICTED and old_is_member is True)
+
+    # Проверяем, является ли пользователь участником сейчас
+    is_member = new_status in [
+        ChatMember.MEMBER,
+        ChatMember.OWNER,
+        ChatMember.ADMINISTRATOR,
+    ] or (new_status == ChatMember.RESTRICTED and new_is_member is True)
+
+    return was_member, is_member
+
+
+@error_logger
+async def handle_channel_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обработчик изменений статуса участников канала.
+    Отслеживает отписки и подписки, уведомляет админов и отправляет прощальные сообщения.
+    """
+    try:
+        # Получаем информацию об изменении статуса
+        result = extract_status_change(update.chat_member)
+        if result is None:
+            return
+
+        was_member, is_member = result
+        chat = update.effective_chat
+
+        # Работаем только с каналами, где бот является админом
+        if chat.type != Chat.CHANNEL:
+            return
+
+        user = update.chat_member.new_chat_member.user
+        user_id = user.id
+        username = user.username or user.first_name or f"ID:{user_id}"
+
+        # Пользователь отписался от канала
+        if was_member and not is_member:
+            logger.info(f"Пользователь {username} ({user_id}) отписался от канала {chat.title}")
+
+            # Отправляем уведомление админам
+            await notify_admins_about_unsubscribe(context, user, chat)
+
+            # Отправляем прощальное сообщение пользователю
+            await send_farewell_message(context, user_id)
+
+        # Пользователь подписался на канал (опционально для логирования)
+        elif not was_member and is_member:
+            logger.info(f"Пользователь {username} ({user_id}) подписался на канал {chat.title}")
+
+    except Exception as e:
+        logger.error(f"Ошибка в handle_channel_member_update: {str(e)}", exc_info=True)
+
+
+async def notify_admins_about_unsubscribe(context: ContextTypes.DEFAULT_TYPE, user, chat):
+    """
+    Отправляет уведомление админам об отписке пользователя от канала.
+    """
+    try:
+        # Формируем информацию о пользователе
+        user_info = []
+        if user.username:
+            user_info.append(f"@{user.username}")
+        if user.first_name:
+            user_info.append(f"Имя: {user.first_name}")
+        if user.last_name:
+            user_info.append(f"Фамилия: {user.last_name}")
+
+        user_display = " | ".join(user_info) if user_info else f"ID: {user.id}"
+
+        # Загружаем шаблон уведомления для админов
+        try:
+            with open("misc/admin_unsubscribe_notification.txt", "r", encoding="utf-8") as f:
+                template = f.read().strip()
+        except FileNotFoundError:
+            template = (
+                "🚨 Уведомление об отписке\n\n"
+                "Пользователь отписался от канала:\n"
+                "👤 Пользователь: {user_info}\n"
+                "🔗 Канал: {channel_name}\n"
+                "📅 Время: {timestamp}"
+            )
+
+        message_text = template.format(
+            user_info=user_display,
+            channel_name=chat.title,
+            timestamp=datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
+            user_id=user.id
+        )
+
+        # Отправляем уведомление всем админам
+        success_count = 0
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=message_text
+                )
+                success_count += 1
+            except Exception as e:
+                logger.error(f"Не удалось отправить уведомление админу {admin_id}: {str(e)}")
+
+        logger.info(f"Уведомление об отписке отправлено {success_count}/{len(ADMIN_IDS)} админам")
+
+    except Exception as e:
+        logger.error(f"Ошибка в notify_admins_about_unsubscribe: {str(e)}", exc_info=True)
+
+
+async def send_farewell_message(context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    try:
+        try:
+            with open("misc/farewell_message.txt", "r", encoding="utf-8") as f:
+                template = f.read().strip()
+        except FileNotFoundError:
+            template = (
+                "👋 До свидания!\n\n"
+                "Жаль, что вы покинули наш канал. "
+                "Если передумаете, мы всегда будем рады видеть вас снова!\n\n"
+                "Спасибо, что были с нами! ❤️"
+            )
+
+        # Отправляем прощальное сообщение с задержкой для избежания спама
+        context.job_queue.run_once(
+            callback=send_delayed_farewell,
+            when=delay_to_send_notification,  # Используем существующую задержку из конфига
+            data={"user_id": user_id, "message_text": template},
+            name=f"farewell_msg_{user_id}_{datetime.now().timestamp()}"
+        )
+
+        logger.info(f"Запланировано отправка прощального сообщения пользователю {user_id}")
+
+    except Exception as e:
+        logger.error(f"Ошибка в send_farewell_message: {str(e)}", exc_info=True)
+
+
+async def send_delayed_farewell(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = context.job.data["user_id"]
+        message_text = context.job.data["message_text"]
+
+        await context.bot.send_message(
+            chat_id=35311086,
+            text=message_text
+        )
+
+        logger.info(f"Прощальное сообщение отправлено пользователю {user_id}")
+
+    except Exception as e:
+        user_id = context.job.data.get("user_id", "unknown")
+        error_text = f"Не удалось отправить прощальное сообщение пользователю {user_id}: {str(e)}"
+        logger.error(error_text)
+
+        # Уведомляем админов об ошибке отправки прощального сообщения
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=error_text)
+            except Exception:
+                # Если и уведомление админам не удалось — просто игнорируем
+                pass
 
 
 @error_logger
@@ -1772,9 +1955,14 @@ def main():
     application.add_handler(
         CallbackQueryHandler(export_history, pattern="^export_history$")
     )
-
+    application.add_handler(
+        ChatMemberHandler(
+            handle_channel_member_update,
+            ChatMemberHandler.CHAT_MEMBER
+        )
+    )
     # Запуск бота
-    application.run_polling()
+    application.run_polling(allowed_updates = Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
